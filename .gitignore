@@ -1,0 +1,16 @@
+﻿# Bevy comparison project (temporary, huge target/ dir)
+compare/
+
+# Build output + dev artifacts (exes, objects, logs, screenshots)
+build/
+
+# Compiler intermediates left next to sources
+*.obj
+*.mlir
+*.ll
+
+# OS / editor
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

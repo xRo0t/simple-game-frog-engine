@@ -1,0 +1,6 @@
+##############################
+# Simple Game - Flycam
+##############################
+
+fun spawn_flycam(x: f32, y: f32, z: f32) -> FlycamNode:
+    return flycam_node_create(x, y, z)

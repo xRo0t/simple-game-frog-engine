@@ -1,0 +1,46 @@
+##############################
+# Simple Game - Head Node
+# The "head" is the rig that owns the view: the camera and the gun are both
+# children of it. Moving/looking moves the head; the camera renders from the
+# head's transform and the gun is rigidly attached to it.
+#
+# Standalone struct (not a Node) — same reason as GunNode: struct inheritance
+# across module boundaries is order-sensitive in the compiler, so we keep the
+# fields local and drive everything explicitly.
+##############################
+
+@heap struct HeadNode:
+    pos_x: f32 = 0.0
+    pos_y: f32 = 0.0
+    pos_z: f32 = 0.0
+    yaw: f32 = 0.0
+    pitch: f32 = 0.0
+    move_speed: f32 = 5.0
+    fast_mult: f32 = 2.0
+    captured: i32 = 1
+    look_ready: i32 = 0
+    aim_x: i32 = 0
+    aim_y: i32 = 0
+
+attach HeadNode:
+
+    fun destroy(self):
+        node_destroy(self as i64)
+
+fun head_node_create(px: f32, py: f32, pz: f32) -> HeadNode:
+    node: HeadNode = HeadNode()
+    node.pos_x = px
+    node.pos_y = py
+    node.pos_z = pz
+    node.yaw = 0.0
+    node.pitch = 0.0
+    node.move_speed = 5.0
+    node.fast_mult = 2.0
+    node.captured = 1
+    node.look_ready = 0
+    node.aim_x = 0
+    node.aim_y = 0
+    return node
+
+fun spawn_head(x: f32, y: f32, z: f32) -> HeadNode:
+    return head_node_create(x, y, z)

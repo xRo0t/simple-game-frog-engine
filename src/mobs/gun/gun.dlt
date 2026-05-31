@@ -1,0 +1,67 @@
+##############################
+# Simple Game - Gun (held viewmodel)
+# Uploads the gun model once and keeps a single GPU instance locked
+# to the camera each frame so it reads as "held" by the player.
+#
+# Standalone struct (not a Node) — the gun is driven directly as a GPU
+# instance transform each frame, so it needs no scene-tree parenting.
+##############################
+
+@heap struct GunNode:
+    # GPU instance id for the gun mesh (-1 = not uploaded)
+    gun_mesh_id: i32 = -1
+    # Last computed world transform (kept for debugging / future use).
+    pos_x: f32 = 0.0
+    pos_y: f32 = 0.0
+    pos_z: f32 = 0.0
+    rot_x: f32 = 0.0
+    rot_y: f32 = 0.0
+    rot_z: f32 = 0.0
+    # View-space offset relative to the camera (right, up, forward).
+    offset_right: f32 = 0.42
+    offset_up: f32 = 0.0 - 0.32
+    offset_fwd: f32 = 0.75
+    # Uniform display scale + base orientation tweaks (degrees).
+    gun_scale: f32 = 0.15
+    yaw_bias: f32 = 0.0
+    pitch_bias: f32 = 0.0
+    roll_bias: f32 = 0.0
+
+attach GunNode:
+
+    fun destroy(self):
+        node_destroy(self as i64)
+
+fun gun_node_create(mesh_id: i32) -> GunNode:
+    node: GunNode = GunNode()
+    node.gun_mesh_id = mesh_id
+    node.pos_x = 0.0
+    node.pos_y = 0.0
+    node.pos_z = 0.0
+    node.rot_x = 0.0
+    node.rot_y = 0.0
+    node.rot_z = 0.0
+    node.offset_right = 0.28
+    node.offset_up = 0.0 - 0.5
+    node.offset_fwd = 0.75
+    node.gun_scale = 0.15
+    node.yaw_bias = 0.0 - 90.0
+    node.pitch_bias = 0.0
+    node.roll_bias = 0.0
+    return node
+
+# Upload the gun model and register one instance, returning a GunNode.
+fun spawn_gun(path: str) -> GunNode:
+    gun_vb: i32 = Engine.upload_model_or_cube(path)
+    inst: i32 = Engine.register_instance(gun_vb)
+    return gun_node_create(inst)
+
+# Upload the gun model + a PNG texture, register an instance, and bind the
+# texture to it so the gun renders textured.
+fun spawn_gun_textured(model_path: str, texture_path: str) -> GunNode:
+    gun_vb: i32 = Engine.upload_model_or_cube(model_path)
+    inst: i32 = Engine.register_instance(gun_vb)
+    tex_id: i32 = Engine.upload_texture(texture_path)
+    if tex_id >= 0:
+        Engine.bind_texture(inst, tex_id)
+    return gun_node_create(inst)

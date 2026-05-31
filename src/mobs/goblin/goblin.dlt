@@ -1,0 +1,172 @@
+##############################
+# Simple Game - Goblin Nodes
+##############################
+
+struct GoblinState:
+    root_ptr: i64 = 0
+    groups_root_ptr: i64 = 0
+    goblin_nodes: i64 = 0
+    group_nodes: i64 = 0
+    first_goblin_id: i32 = -1
+    count: i32 = 0
+    group_count: i32 = 0
+    scale_x: f32 = 0.053
+    scale_y: f32 = 0.053
+    scale_z: f32 = 0.053
+
+fun goblin_hash(index: i32, phase_tick: i32, salt: i32) -> i32:
+    value: i32 = (index * 193 + phase_tick * 389 + salt * 997 + 101) % 9973
+    value = (value * 53 + index * 71 + phase_tick * 29 + salt * 17 + 211) % 9973
+    if value < 0:
+        value = 0 - value
+    return value
+
+fun goblin_rand01(index: i32, phase_tick: i32, salt: i32) -> f32:
+    return (goblin_hash(index, phase_tick, salt) as f32) / 9973.0
+
+fun goblin_rand_range(index: i32, phase_tick: i32, salt: i32, min: f32, max: f32) -> f32:
+    return min + (max - min) * goblin_rand01(index, phase_tick, salt)
+
+fun goblin_yaw_from_dir(dir_x: f32, dir_z: f32) -> f32:
+    return approx_atan2(0.0 - dir_x, 0.0 - dir_z) * 57.2957795
+
+fun goblin_at(g: GoblinState, index: i32) -> GoblinNode:
+    return node_store_get(g.goblin_nodes, index) as GoblinNode
+
+fun goblin_group_at(g: GoblinState, index: i32) -> GoblinGroupNode:
+    return node_store_get(g.group_nodes, index) as GoblinGroupNode
+
+attach GoblinGroupNode:
+
+    fun clear_stats(self):
+        self.sum_x = 0.0
+        self.sum_z = 0.0
+        self.member_count = 0
+        self.leader_index = -1
+        self.leader_x = 0.0
+        self.leader_z = 0.0
+        self.center_x = 0.0
+        self.center_z = 0.0
+
+    fun add_member(self, goblin: GoblinNode, index: i32):
+        if self.member_count == 0:
+            self.leader_index = index
+            self.leader_x = goblin.pos_x
+            self.leader_z = goblin.pos_z
+        self.sum_x = self.sum_x + goblin.pos_x
+        self.sum_z = self.sum_z + goblin.pos_z
+        self.member_count = self.member_count + 1
+
+    fun finish_stats(self):
+        if self.member_count > 0:
+            self.center_x = self.sum_x / (self.member_count as f32)
+            self.center_z = self.sum_z / (self.member_count as f32)
+
+attach GoblinNode:
+
+    fun set_phase(self, phase: i32, phase_tick: i32):
+        duration: f32 = 0.0
+        angle: f32 = 0.0
+        roll: f32 = 0.0
+
+        self.phase = phase
+        self.phase_tick = phase_tick
+        self.dir_x = 0.0
+        self.dir_z = 0.0
+
+        if phase == 0:
+            roll = goblin_rand01(self.id, phase_tick, 11)
+            if roll < 0.55:
+                duration = goblin_rand_range(self.id, phase_tick, 13, 0.7, 2.0)
+            elif roll < 0.85:
+                duration = goblin_rand_range(self.id, phase_tick, 17, 2.0, 4.2)
+            else:
+                duration = goblin_rand_range(self.id, phase_tick, 19, 4.2, 7.0)
+        else:
+            roll = goblin_rand01(self.id, phase_tick, 23)
+            if roll < 0.50:
+                duration = goblin_rand_range(self.id, phase_tick, 29, 0.8, 2.0)
+            elif roll < 0.82:
+                duration = goblin_rand_range(self.id, phase_tick, 31, 2.5, 5.0)
+            else:
+                duration = goblin_rand_range(self.id, phase_tick, 37, 5.0, 10.0)
+            angle = goblin_rand_range(self.id, phase_tick, 41, 0.0, 6.2831853)
+            self.dir_x = @sin(angle)
+            self.dir_z = @cos(angle)
+
+        self.timer = duration
+
+    fun sync_goblin_mesh(self):
+        self.pos_y = 0.64
+        self.rot_x = 0.0
+        self.rot_y = self.yaw + 180.0 #wsnthere
+        self.rot_z = 0.0
+        if self.mesh_id < 0:
+            return
+        Engine.set_transform(
+            self.mesh_id,
+            self.pos_x,
+            self.pos_y,
+            self.pos_z,
+            self.rot_x,
+            self.rot_y,
+            self.rot_z,
+            self.scale_x,
+            self.scale_y,
+            self.scale_z
+        )
+
+fun goblin_set_phase(g: GoblinState, index: i32, phase: i32, phase_tick: i32):
+    node: GoblinNode = goblin_at(g, index)
+    node.set_phase(phase, phase_tick)
+
+fun goblin_create(count: i32, group_count: i32) -> GoblinState:
+    g: GoblinState = GoblinState()
+    root: RootNode = root_node_create("GoblinsRoot", 0)
+    groups_root: RootNode = root_node_create("GoblinGroupsRoot", 1)
+    i: i32 = 0
+
+    g.count = count
+    g.group_count = group_count
+    g.first_goblin_id = -1
+    g.scale_x = 0.053
+    g.scale_y = 0.053
+    g.scale_z = 0.053
+    g.root_ptr = root as i64
+    g.groups_root_ptr = groups_root as i64
+    g.goblin_nodes = node_store_create(count)
+    g.group_nodes = node_store_create(group_count)
+
+    root.add_child(groups_root as i64)
+    while i < group_count:
+        group: GoblinGroupNode = goblin_group_node_create(i)
+        node_store_set(g.group_nodes, i, group as i64)
+        groups_root.add_child(group as i64)
+        i = i + 1
+
+    return g
+
+fun goblin_setup(g: GoblinState, index: i32, mesh_id: i32, x: f32, z: f32, group_id: i32):
+    goblin: GoblinNode = goblin_node_create(index, mesh_id, x, z, group_id)
+    start_phase: i32 = 0
+    root: Node = g.root_ptr as Node
+
+    if goblin_rand01(index, 0, 5) > 0.6:
+        start_phase = 1
+    goblin.social_timer = goblin_rand_range(index, 0, 83, 1.0, 5.0)
+    goblin.set_phase(start_phase, 0)
+    if start_phase == 1:
+        goblin.yaw = goblin_yaw_from_dir(goblin.dir_x, goblin.dir_z)
+    node_store_set(g.goblin_nodes, index, goblin as i64)
+
+    if group_id >= 0 and group_id < g.group_count:
+        group: GoblinGroupNode = goblin_group_at(g, group_id)
+        group.add_child(goblin as i64)
+    else:
+        root.add_child(goblin as i64)
+
+fun goblin_cleanup(g: GoblinState):
+    node_store_destroy(g.goblin_nodes, g.count, 1)
+    node_store_destroy(g.group_nodes, g.group_count, 1)
+    node_destroy(g.groups_root_ptr)
+    node_destroy(g.root_ptr)

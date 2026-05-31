@@ -1,0 +1,55 @@
+##############################
+# Simple Game - Gun Controller
+# True FPS viewmodel: the gun is rendered in VIEW space so it stays perfectly
+# fixed on screen regardless of where the head looks.
+#
+# The renderer computes MVP = (P * V) * model. If we set the gun's model matrix
+# to (camera_world * local) — where camera_world = V^-1 — then
+#   MVP = P * V * V^-1 * local = P * local
+# so the gun is locked to the screen. local is a fixed view-space transform
+# (offset + base orientation + scale); the head's motion cancels out.
+##############################
+
+fun update_gun_head(gun: GunNode, head: HeadNode):
+    if gun.gun_mesh_id < 0:
+        return
+
+    pi: f32 = 3.14159265
+    ax: f32 = head.pitch * pi / 180.0
+    ay: f32 = head.yaw * pi / 180.0
+    cx: f32 = @cos(ax)
+    sx: f32 = @sin(ax)
+    cy: f32 = @cos(ay)
+    sy: f32 = @sin(ay)
+
+    # camera_world = V^-1: rotation columns are the camera's world axes
+    #   right = ( cy,     0,    -sy   )   -> column 0
+    #   up    = ( sx*sy,  cx,    sx*cy)   -> column 1
+    #   back  = ( cx*sy, -sx,    cx*cy)   -> column 2 (camera looks down -Z)
+    cw: Mat4 = Mat4.identity()
+    cw.m0 = cy
+    cw.m1 = 0.0
+    cw.m2 = 0.0 - sy
+    cw.m3 = 0.0
+    cw.m4 = sx * sy
+    cw.m5 = cx
+    cw.m6 = sx * cy
+    cw.m7 = 0.0
+    cw.m8 = cx * sy
+    cw.m9 = 0.0 - sx
+    cw.m10 = cx * cy
+    cw.m11 = 0.0
+    cw.m12 = head.pos_x
+    cw.m13 = head.pos_y
+    cw.m14 = head.pos_z
+    cw.m15 = 1.0
+
+    # local view-space transform: T(offset) * R(biases) * S(scale).
+    # View axes: +X right, +Y up, +Z back; gun sits in front at -Z.
+    local_rot: Mat4 = Mat4.trs(gun.offset_right, gun.offset_up, 0.0 - gun.offset_fwd, gun.pitch_bias, gun.yaw_bias, gun.roll_bias, gun.gun_scale, gun.gun_scale, gun.gun_scale)
+
+    model: Mat4 = cw.mul(local_rot)
+    mat_ptr: i64 = Memory.malloc_zeroed(64)
+    model.write_to_ptr(mat_ptr)
+    Engine.set_model_matrix_raw(gun.gun_mesh_id, mat_ptr)
+    Memory.free(mat_ptr)

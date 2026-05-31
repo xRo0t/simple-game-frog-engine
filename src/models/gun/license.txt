@@ -1,0 +1,11 @@
+Model Information:
+* title:	1911 Low Poly Pixel Texture
+* source:	https://sketchfab.com/3d-models/1911-low-poly-pixel-texture-f88f9c2603b24c4ea97270639fe29cb4
+* author:	mufasa.jones (https://sketchfab.com/mufasa.jones)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "1911 Low Poly Pixel Texture" (https://sketchfab.com/3d-models/1911-low-poly-pixel-texture-f88f9c2603b24c4ea97270639fe29cb4) by mufasa.jones (https://sketchfab.com/mufasa.jones) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

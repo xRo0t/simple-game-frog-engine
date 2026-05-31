@@ -1,0 +1,159 @@
+##############################
+# Simple Game - Goblin Node Controller
+##############################
+
+fun goblin_clear_group_stats(g: GoblinState):
+    i: i32 = 0
+    while i < g.group_count:
+        group: GoblinGroupNode = goblin_group_at(g, i)
+        group.clear_stats()
+        i = i + 1
+
+fun goblin_rebuild_group_centers(g: GoblinState):
+    index: i32 = 0
+    group_id: i32 = 0
+    goblin_clear_group_stats(g)
+
+    while index < g.count:
+        goblin: GoblinNode = goblin_at(g, index)
+        group_id = goblin.group_id
+        if group_id >= 0:
+            if group_id < g.group_count:
+                group: GoblinGroupNode = goblin_group_at(g, group_id)
+                group.add_member(goblin, index)
+        index = index + 1
+
+    index = 0
+    while index < g.group_count:
+        group2: GoblinGroupNode = goblin_group_at(g, index)
+        group2.finish_stats()
+        index = index + 1
+
+attach GoblinNode:
+
+    fun update_behavior(self, g: GoblinState, dt: f32, cam_x: f32, cam_z: f32, cam_fwd_x: f32, cam_fwd_z: f32):
+        members: i32 = 0
+        desired_x: f32 = 0.0
+        desired_z: f32 = 0.0
+        away_x: f32 = 0.0
+        away_z: f32 = 0.0
+        dist_sq: f32 = 0.0
+        dist: f32 = 0.0
+        home_dx: f32 = 0.0
+        home_dz: f32 = 0.0
+        home_dist_sq: f32 = 0.0
+        group_dx: f32 = 0.0
+        group_dz: f32 = 0.0
+        group_dist_sq: f32 = 0.0
+        group_dist: f32 = 0.0
+        desired_len_sq: f32 = 0.0
+        desired_len: f32 = 0.0
+        move_speed: f32 = 1.1
+        target_yaw: f32 = 0.0
+        panic_radius: f32 = 5.0
+        panic_sq: f32 = panic_radius * panic_radius
+        free_roam: f32 = 72.0
+        free_roam_sq: f32 = free_roam * free_roam
+        group_target_x: f32 = 0.0
+        group_target_z: f32 = 0.0
+
+        desired_x = 0.0
+        desired_z = 0.0
+        move_speed = 1.1
+
+        away_x = self.pos_x - cam_x
+        away_z = self.pos_z - cam_z
+        dist_sq = away_x * away_x + away_z * away_z
+        if dist_sq < panic_sq:
+            dist = @sqrt(dist_sq)
+            if dist < 0.001:
+                away_x = cam_fwd_x
+                away_z = cam_fwd_z
+                dist = 1.0
+            desired_x = away_x / dist
+            desired_z = away_z / dist
+            move_speed = 2.6
+        else:
+            self.social_timer = self.social_timer - dt
+            if self.social_timer <= 0.0:
+                if self.group_id >= 0:
+                    if goblin_rand01(self.id, self.phase_tick, 67) < 0.04:
+                        self.group_id = -1
+                        self.role = 0
+                self.social_timer = goblin_rand_range(self.id, self.phase_tick, 71, 2.0, 7.0)
+
+            self.timer = self.timer - dt
+            if self.timer <= 0.0:
+                self.phase_tick = self.phase_tick + 1
+                if self.phase == 0:
+                    self.set_phase(1, self.phase_tick)
+                else:
+                    self.set_phase(0, self.phase_tick)
+
+            if self.phase == 1:
+                desired_x = self.dir_x
+                desired_z = self.dir_z
+                if goblin_rand01(self.id, self.phase_tick, 41) < 0.30:
+                    move_speed = goblin_rand_range(self.id, self.phase_tick, 43, 0.25, 0.70)
+                elif goblin_rand01(self.id, self.phase_tick, 41) < 0.82:
+                    move_speed = goblin_rand_range(self.id, self.phase_tick, 47, 0.70, 1.40)
+                else:
+                    move_speed = goblin_rand_range(self.id, self.phase_tick, 53, 1.40, 2.20)
+
+            if self.group_id >= 0:
+                if self.group_id < g.group_count:
+                    group: GoblinGroupNode = goblin_group_at(g, self.group_id)
+                    members = group.member_count
+                    if members > 1:
+                        group_target_x = group.center_x
+                        group_target_z = group.center_z
+                        if group.leader_index == self.id:
+                            self.role = 2
+                        else:
+                            self.role = 1
+                            group_target_x = group.leader_x
+                            group_target_z = group.leader_z
+                        group_dx = group_target_x - self.pos_x
+                        group_dz = group_target_z - self.pos_z
+                        group_dist_sq = group_dx * group_dx + group_dz * group_dz
+                        if group_dist_sq > 64.0:
+                            group_dist = @sqrt(group_dist_sq)
+                            desired_x = desired_x + group_dx / group_dist * 1.1
+                            desired_z = desired_z + group_dz / group_dist * 1.1
+                            if group_dist_sq > 324.0:
+                                move_speed = 2.0
+
+            home_dx = self.home_x - self.pos_x
+            home_dz = self.home_z - self.pos_z
+            home_dist_sq = home_dx * home_dx + home_dz * home_dz
+            if home_dist_sq > free_roam_sq:
+                dist = @sqrt(home_dist_sq)
+                desired_x = desired_x + home_dx / dist * 0.15
+                desired_z = desired_z + home_dz / dist * 0.15
+
+        desired_len_sq = desired_x * desired_x + desired_z * desired_z
+        if desired_len_sq > 0.0001:
+            desired_len = @sqrt(desired_len_sq)
+            self.pos_x = self.pos_x + desired_x / desired_len * move_speed * dt
+            self.pos_z = self.pos_z + desired_z / desired_len * move_speed * dt
+            target_yaw = goblin_yaw_from_dir(desired_x, desired_z)
+            self.yaw = lerp_angle_deg(self.yaw, target_yaw, dt * 5.0)
+
+        if dist_sq < panic_sq:
+            self.home_x = self.pos_x
+            self.home_z = self.pos_z
+        elif desired_len_sq > 0.0001:
+            self.home_x = self.home_x + (self.pos_x - self.home_x) * dt * 0.08
+            self.home_z = self.home_z + (self.pos_z - self.home_z) * dt * 0.08
+
+        self.sync_goblin_mesh()
+
+fun update_goblins(g: GoblinState, dt: f32, cam_x: f32, cam_z: f32, cam_fwd_x: f32, cam_fwd_z: f32):
+    index: i32 = 0
+
+    goblin_rebuild_group_centers(g)
+
+    while index < g.count:
+        goblin: GoblinNode = goblin_at(g, index)
+        goblin.update_behavior(g, dt, cam_x, cam_z, cam_fwd_x, cam_fwd_z)
+        index = index + 1

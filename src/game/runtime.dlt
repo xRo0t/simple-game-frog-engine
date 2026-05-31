@@ -1,0 +1,63 @@
+##############################
+# Simple Game - Runtime
+# Game-specific loop on top of Frog's Engine API.
+#
+# Rig: a Head node owns the view. The camera (a FlycamNode the engine renders
+# from) and the gun are both children of the head — input moves the head, the
+# camera is synced from it, and the gun is rigidly attached to it.
+##############################
+
+import std
+import frog
+import mobs.flycam.flycam
+import mobs.head.head
+import mobs.head.controller
+import mobs.goblin.goblin
+import mobs.goblin.controller
+import mobs.gun.gun
+import mobs.gun.controller
+import world.earth
+
+attach Engine:
+
+    static fun run():
+        if Engine.start() == 0:
+            return
+
+        earth: EarthNode = earth_node_create()
+        earth.goblin_count = 1000
+        goblins: GoblinState = earth.spawn_world()
+
+        # Head rig + its children: camera (rendered) and gun.
+        head: HeadNode = spawn_head(0.0, 4.0, 0.0)
+        camera: FlycamNode = spawn_flycam(0.0, 4.0, 0.0)
+        gun: GunNode = spawn_gun_textured("models/gun/scene.gltf", "models/gun/textures/1911_baseColor.png")
+
+        Engine.capture_mouse()
+        print("OOP node tree scene ready")
+
+        while Engine.running() == 1:
+            dt: f32 = Engine.begin_frame()
+            if dt > 0.033:
+                dt = 0.033
+
+            # Drive the head from input, then propagate to children.
+            update_head(head, dt)
+            sync_camera_to_head(camera, head)
+            update_gun_head(gun, head)
+
+            yaw_rad: f32 = deg2rad(head.yaw)
+            cam_fwd_x: f32 = 0.0 - @sin(yaw_rad)
+            cam_fwd_z: f32 = 0.0 - @cos(yaw_rad)
+            update_goblins(goblins, dt, head.pos_x, head.pos_z, cam_fwd_x, cam_fwd_z)
+
+            Engine.render_flycam(camera)
+
+        goblin_cleanup(goblins)
+        gun.destroy()
+        camera.destroy()
+        head.destroy()
+        earth.destroy()
+        Engine.destroy_scene()
+        Engine.shutdown()
+        print("GPU closed")

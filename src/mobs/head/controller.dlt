@@ -1,0 +1,83 @@
+##############################
+# Simple Game - Head Controller
+# Drives the head rig from input (movement + mouse look), then propagates the
+# head transform to its children: the camera (rendered) and the gun.
+##############################
+
+fun update_head(head: HeadNode, dt: f32):
+    if Input.key_down(KEY_ESCAPE) == 1:
+        if head.captured == 1:
+            Engine.release_mouse()
+            head.captured = 0
+
+    if head.captured == 0:
+        if Input.key_down(KEY_M) == 1:
+            Engine.capture_mouse()
+            head.captured = 1
+            head.look_ready = 0
+
+    if head.captured == 1:
+        if head.look_ready == 0:
+            Engine.center_mouse()
+            head.aim_x = Engine.mouse_x()
+            head.aim_y = Engine.mouse_y()
+            head.look_ready = 1
+        else:
+            mx: i32 = Engine.mouse_x()
+            my: i32 = Engine.mouse_y()
+            mdx: i32 = mx - head.aim_x
+            mdy: i32 = my - head.aim_y
+            head.yaw = normalize_angle_deg(head.yaw - (mdx as f32) * 0.07)
+            head.pitch = clamp(head.pitch - (mdy as f32) * 0.07, 0.0 - 89.0, 89.0)
+            Engine.center_mouse()
+
+    if Input.key_down(KEY_LEFT) == 1:
+        head.yaw = normalize_angle_deg(head.yaw + 50.0 * dt)
+    if Input.key_down(KEY_RIGHT) == 1:
+        head.yaw = normalize_angle_deg(head.yaw - 50.0 * dt)
+    if Input.key_down(KEY_UP) == 1:
+        head.pitch = clamp(head.pitch + 50.0 * dt, 0.0 - 89.0, 89.0)
+    if Input.key_down(KEY_DOWN) == 1:
+        head.pitch = clamp(head.pitch - 50.0 * dt, 0.0 - 89.0, 89.0)
+
+    move_speed: f32 = head.move_speed
+    if Input.key_down(KEY_SHIFT) == 1:
+        move_speed = move_speed * head.fast_mult
+    speed: f32 = move_speed * dt
+
+    yr: f32 = deg2rad(head.yaw)
+    fwd_x: f32 = 0.0 - @sin(yr)
+    fwd_z: f32 = 0.0 - @cos(yr)
+    right_x: f32 = @cos(yr)
+    right_z: f32 = 0.0 - @sin(yr)
+
+    if Input.key_down(KEY_W) == 1:
+        head.pos_x = head.pos_x + fwd_x * speed
+        head.pos_z = head.pos_z + fwd_z * speed
+    if Input.key_down(KEY_S) == 1:
+        head.pos_x = head.pos_x - fwd_x * speed
+        head.pos_z = head.pos_z - fwd_z * speed
+    if Input.key_down(KEY_A) == 1:
+        head.pos_x = head.pos_x - right_x * speed
+        head.pos_z = head.pos_z - right_z * speed
+    if Input.key_down(KEY_D) == 1:
+        head.pos_x = head.pos_x + right_x * speed
+        head.pos_z = head.pos_z + right_z * speed
+    if Input.key_down(KEY_SPACE) == 1 or Input.key_down(KEY_E) == 1:
+        head.pos_y = head.pos_y + speed
+    if Input.key_down(KEY_CTRL) == 1 or Input.key_down(KEY_Q) == 1:
+        head.pos_y = head.pos_y - speed
+
+    if head.pos_y < 1.2:
+        head.pos_y = 1.2
+    if head.pos_y > 120.0:
+        head.pos_y = 120.0
+
+# Propagate the head transform into the camera child (a FlycamNode that the
+# engine renders from). The camera is rigidly parented to the head.
+fun sync_camera_to_head(cam: FlycamNode, head: HeadNode):
+    cam.pos_x = head.pos_x
+    cam.pos_y = head.pos_y
+    cam.pos_z = head.pos_z
+    cam.yaw = head.yaw
+    cam.pitch = head.pitch
