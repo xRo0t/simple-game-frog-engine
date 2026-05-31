@@ -10,6 +10,41 @@
 # (offset + base orientation + scale); the head's motion cancels out.
 ##############################
 
+# Spring-damped weapon sway (the engine Spring formula inlined on flat GunNode
+# fields, matching the engine's @heap-struct mutation pattern). Turning the view
+# pushes the gun opposite the look; the spring eases it back to rest.
+# Framerate-independent: the target is built from look speed (deg/sec).
+fun update_gun_sway(gun: GunNode, head: HeadNode, dt: f32):
+    if gun.gun_mesh_id < 0:
+        return
+    if dt <= 0.0:
+        return
+
+    dyaw: f32 = normalize_angle_deg(head.yaw - gun.prev_yaw)
+    dpitch: f32 = head.pitch - gun.prev_pitch
+    gun.prev_yaw = head.yaw
+    gun.prev_pitch = head.pitch
+
+    tx: f32 = clamp((0.0 - dyaw / dt) * gun.sway_amount, 0.0 - gun.sway_max, gun.sway_max)
+    ty: f32 = clamp((0.0 - dpitch / dt) * gun.sway_amount, 0.0 - gun.sway_max, gun.sway_max)
+
+    fx: f32 = gun.sway_stiffness * (tx - gun.sway_x) - gun.sway_damping * gun.sway_vx
+    fy: f32 = gun.sway_stiffness * (ty - gun.sway_y) - gun.sway_damping * gun.sway_vy
+    gun.sway_vx = gun.sway_vx + fx * dt
+    gun.sway_vy = gun.sway_vy + fy * dt
+    gun.sway_x = gun.sway_x + gun.sway_vx * dt
+    gun.sway_y = gun.sway_y + gun.sway_vy * dt
+
+# Aim-down-sights: hold right mouse to blend the gun toward the aimed pose.
+# damp gives a smooth, framerate-independent transition both ways (idle <-> aim).
+fun update_gun_ads(gun: GunNode, dt: f32):
+    if dt <= 0.0:
+        return
+    target: f32 = 0.0
+    if Input.key_down(MOUSE_RIGHT) == 1:
+        target = 1.0
+    gun.ads = damp(gun.ads, target, gun.ads_speed, dt)
+
 fun update_gun_head(gun: GunNode, head: HeadNode):
     if gun.gun_mesh_id < 0:
         return
@@ -46,7 +81,15 @@ fun update_gun_head(gun: GunNode, head: HeadNode):
 
     # local view-space transform: T(offset) * R(biases) * S(scale).
     # View axes: +X right, +Y up, +Z back; gun sits in front at -Z.
-    local_rot: Mat4 = Mat4.trs(gun.offset_right, gun.offset_up, 0.0 - gun.offset_fwd, gun.pitch_bias, gun.yaw_bias, gun.roll_bias, gun.gun_scale, gun.gun_scale, gun.gun_scale)
+    # Blend idle->aim by gun.ads, then add sway (reduced while aiming for a steady hold).
+    base_right: f32 = lerp(gun.offset_right, gun.ads_right, gun.ads)
+    base_up: f32 = lerp(gun.offset_up, gun.ads_up, gun.ads)
+    base_fwd: f32 = lerp(gun.offset_fwd, gun.ads_fwd, gun.ads)
+    sway_scale: f32 = 1.0 - gun.ads * 0.7
+    off_right: f32 = base_right + gun.sway_x * sway_scale
+    off_up: f32 = base_up + gun.sway_y * sway_scale
+    roll: f32 = gun.roll_bias + gun.sway_x * gun.sway_roll * sway_scale
+    local_rot: Mat4 = Mat4.trs(off_right, off_up, 0.0 - base_fwd, gun.pitch_bias, gun.yaw_bias, roll, gun.gun_scale, gun.gun_scale, gun.gun_scale)
 
     model: Mat4 = cw.mul(local_rot)
     mat_ptr: i64 = Memory.malloc_zeroed(64)

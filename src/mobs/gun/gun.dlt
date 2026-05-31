@@ -26,6 +26,24 @@
     yaw_bias: f32 = 0.0
     pitch_bias: f32 = 0.0
     roll_bias: f32 = 0.0
+    # --- weapon sway (view-space, spring-damped) ---
+    sway_x: f32 = 0.0          # current horizontal offset (added to offset_right)
+    sway_y: f32 = 0.0          # current vertical offset (added to offset_up)
+    sway_vx: f32 = 0.0         # spring velocity
+    sway_vy: f32 = 0.0
+    prev_yaw: f32 = 0.0        # last frame's look angles (for the per-frame delta)
+    prev_pitch: f32 = 0.0
+    sway_amount: f32 = 0.0016  # offset per deg/sec of look
+    sway_max: f32 = 0.1        # clamp so fast flicks don't fling the gun
+    sway_stiffness: f32 = 140.0
+    sway_damping: f32 = 22.0   # ~2*sqrt(stiffness) = critical
+    sway_roll: f32 = 70.0      # extra barrel tilt (deg) per unit horizontal sway
+    # --- aim down sights (ADS) ---
+    ads: f32 = 0.0             # current blend: 0 = idle/hip, 1 = fully aimed
+    ads_speed: f32 = 12.0      # transition responsiveness (damp k)
+    ads_right: f32 = 0.0       # aimed-pose view-space offsets (tune to align the sights)
+    ads_up: f32 = 0.0 - 0.4
+    ads_fwd: f32 = 0.6
 
 attach GunNode:
 

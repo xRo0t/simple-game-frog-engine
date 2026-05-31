@@ -44,6 +44,8 @@ attach Engine:
             # Drive the head from input, then propagate to children.
             update_head(head, dt)
             sync_camera_to_head(camera, head)
+            update_gun_sway(gun, head, dt)
+            update_gun_ads(gun, dt)
             update_gun_head(gun, head)
 
             yaw_rad: f32 = deg2rad(head.yaw)
