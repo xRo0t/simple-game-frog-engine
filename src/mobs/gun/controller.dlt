@@ -45,6 +45,84 @@ fun update_gun_ads(gun: GunNode, dt: f32):
         target = 1.0
     gun.ads = damp(gun.ads, target, gun.ads_speed, dt)
 
+# Drop (G) / pickup (F) reusing the single gun instance — no spawn/destroy.
+# Drop: plant the instance in the world at the player's feet. Pickup: when the
+# player is within pickup_radius, flip back to the held viewmodel. G/F are
+# edge-detected (fire once per press, not every frame they're held).
+fun update_gun_pickup(gun: GunNode, head: HeadNode):
+    if gun.gun_mesh_id < 0:
+        return
+
+    g_now: i32 = Input.key_down(KEY_G)
+    f_now: i32 = Input.key_down(KEY_F)
+
+    if g_now == 1:
+        if gun.prev_g == 0:
+            if gun.held == 1:
+                yr: f32 = deg2rad(head.yaw)
+                fwd_x: f32 = 0.0 - @sin(yr)
+                fwd_z: f32 = 0.0 - @cos(yr)
+                right_x: f32 = @cos(yr)
+                right_z: f32 = 0.0 - @sin(yr)
+                gun.drop_count = gun.drop_count + 1
+                dc: i32 = gun.drop_count
+                # Randomize each toss so no two drops look the same.
+                fwd_mag: f32 = rand_range(dc, 1, 7, 1.6, 3.2)
+                up_mag: f32 = rand_range(dc, 2, 13, 2.0, 3.4)
+                side: f32 = rand_range(dc, 3, 19, 0.0 - 1.3, 1.3)
+                spin_dir: f32 = 1.0
+                if rand01(dc, 4, 23) < 0.5:
+                    spin_dir = 0.0 - 1.0
+                gun.drop_x = head.pos_x + fwd_x * 0.5
+                gun.drop_y = head.pos_y - 0.4
+                gun.drop_z = head.pos_z + fwd_z * 0.5
+                gun.drop_yaw = head.yaw + rand_range(dc, 6, 31, 0.0, 360.0)
+                gun.drop_vx = fwd_x * fwd_mag + right_x * side
+                gun.drop_vy = up_mag
+                gun.drop_vz = fwd_z * fwd_mag + right_z * side
+                gun.drop_spin = 0.0
+                gun.drop_spin_rate = spin_dir * rand_range(dc, 5, 29, 300.0, 720.0)
+                gun.falling = 1
+                gun.held = 0
+    gun.prev_g = g_now
+
+    if f_now == 1:
+        if gun.prev_f == 0:
+            if gun.held == 0:
+                dx: f32 = head.pos_x - gun.drop_x
+                dz: f32 = head.pos_z - gun.drop_z
+                if dx * dx + dz * dz <= gun.pickup_radius * gun.pickup_radius:
+                    gun.held = 1
+    gun.prev_f = f_now
+
+# Scripted "item drop" motion (Minecraft-style): a ballistic toss integrated by
+# hand — gravity + tumble, no physics engine. ~6 float ops/frame for one item.
+# Rests flat on the ground once it lands, then stops updating.
+fun update_gun_drop(gun: GunNode, dt: f32):
+    if gun.gun_mesh_id < 0:
+        return
+    if gun.falling == 0:
+        return
+
+    gravity: f32 = 14.0
+    rest_y: f32 = 0.3
+
+    gun.drop_vy = gun.drop_vy - gravity * dt
+    gun.drop_x = gun.drop_x + gun.drop_vx * dt
+    gun.drop_y = gun.drop_y + gun.drop_vy * dt
+    gun.drop_z = gun.drop_z + gun.drop_vz * dt
+    gun.drop_spin = gun.drop_spin + gun.drop_spin_rate * dt
+
+    if gun.drop_y <= rest_y:
+        gun.drop_y = rest_y
+        gun.falling = 0
+        # Settle flat on the ground (pitch 90 = lying down; tunable).
+        Engine.set_transform(gun.gun_mesh_id, gun.drop_x, gun.drop_y, gun.drop_z, 90.0, gun.drop_yaw, 0.0, gun.world_scale, gun.world_scale, gun.world_scale)
+        return
+
+    # Mid-air: tumble end-over-end (rx = drop_spin).
+    Engine.set_transform(gun.gun_mesh_id, gun.drop_x, gun.drop_y, gun.drop_z, gun.drop_spin, gun.drop_yaw, 0.0, gun.world_scale, gun.world_scale, gun.world_scale)
+
 fun update_gun_head(gun: GunNode, head: HeadNode):
     if gun.gun_mesh_id < 0:
         return

@@ -1,0 +1,101 @@
+##############################
+# Simple Game - Bullets (pooled projectiles)
+# A fixed pool of GPU instances sharing one mesh. Firing grabs the next slot,
+# aims it down the camera forward, and shows it; each frame active bullets
+# advance and expire (hidden) after their lifetime. No runtime spawn/destroy —
+# slots are recycled via Engine.set_instance_visible (the primitive we added).
+#
+# Stored in a node_store of @heap BulletNode (same pattern as the goblins) so
+# we use plain struct-field access, not array indexing (b.px[i] is unsupported).
+##############################
+
+@heap struct BulletNode:
+    id: i32 = -1          # GPU instance id (shared bullet mesh)
+    active: i32 = 0
+    px: f32 = 0.0
+    py: f32 = 0.0
+    pz: f32 = 0.0
+    vx: f32 = 0.0
+    vy: f32 = 0.0
+    vz: f32 = 0.0
+    life: f32 = 0.0
+    yaw: f32 = 0.0
+
+struct BulletPool:
+    nodes: i64 = 0        # node_store of BulletNode
+    count: i32 = 0
+    next: i32 = 0         # round-robin slot cursor
+    speed: f32 = 60.0     # units/sec
+    life_span: f32 = 2.0  # seconds before a bullet expires
+    scale: f32 = 0.05
+    prev_fire: i32 = 0    # edge-detect left-click
+
+fun bullet_at(b: BulletPool, index: i32) -> BulletNode:
+    return node_store_get(b.nodes, index) as BulletNode
+
+# Upload the bullet mesh once and pre-register `count` hidden instances.
+fun spawn_bullet_pool(path: str, count: i32) -> BulletPool:
+    b: BulletPool = BulletPool()
+    b.count = count
+    b.nodes = node_store_create(count)
+    vb: i32 = Engine.upload_model_or_cube(path)
+    i: i32 = 0
+    while i < count:
+        node: BulletNode = BulletNode()
+        node.id = Engine.register_instance(vb)
+        node.active = 0
+        Engine.set_instance_visible(node.id, 0)
+        node_store_set(b.nodes, i, node as i64)
+        i = i + 1
+    return b
+
+# Fire one bullet from the camera (head) along its look direction.
+fun fire_bullet(b: BulletPool, head: HeadNode):
+    yr: f32 = deg2rad(head.yaw)
+    pr: f32 = deg2rad(head.pitch)
+    cp: f32 = @cos(pr)
+    fx: f32 = (0.0 - @sin(yr)) * cp
+    fy: f32 = @sin(pr)
+    fz: f32 = (0.0 - @cos(yr)) * cp
+
+    bn: BulletNode = bullet_at(b, b.next)
+    bn.px = head.pos_x + fx * 0.6
+    bn.py = head.pos_y + fy * 0.6
+    bn.pz = head.pos_z + fz * 0.6
+    bn.vx = fx * b.speed
+    bn.vy = fy * b.speed
+    bn.vz = fz * b.speed
+    bn.life = b.life_span
+    bn.yaw = head.yaw
+    bn.active = 1
+    Engine.set_instance_visible(bn.id, 1)
+    Engine.set_transform(bn.id, bn.px, bn.py, bn.pz, 0.0, bn.yaw, 0.0, b.scale, b.scale, b.scale)
+    b.next = (b.next + 1) % b.count
+
+# Left-click (edge-detected) fires one bullet; can_fire gates on holding the gun.
+fun bullet_try_fire(b: BulletPool, head: HeadNode, can_fire: i32):
+    fire_now: i32 = Input.key_down(MOUSE_LEFT)
+    if fire_now == 1:
+        if b.prev_fire == 0:
+            if can_fire == 1:
+                fire_bullet(b, head)
+    b.prev_fire = fire_now
+
+fun update_bullets(b: BulletPool, dt: f32):
+    i: i32 = 0
+    while i < b.count:
+        bn: BulletNode = bullet_at(b, i)
+        if bn.active == 1:
+            bn.px = bn.px + bn.vx * dt
+            bn.py = bn.py + bn.vy * dt
+            bn.pz = bn.pz + bn.vz * dt
+            bn.life = bn.life - dt
+            if bn.life <= 0.0:
+                bn.active = 0
+                Engine.set_instance_visible(bn.id, 0)
+            else:
+                Engine.set_transform(bn.id, bn.px, bn.py, bn.pz, 0.0, bn.yaw, 0.0, b.scale, b.scale, b.scale)
+        i = i + 1
+
+fun bullet_cleanup(b: BulletPool):
+    node_store_destroy(b.nodes, b.count, 1)

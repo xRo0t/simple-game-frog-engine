@@ -16,6 +16,7 @@ import mobs.goblin.goblin
 import mobs.goblin.controller
 import mobs.gun.gun
 import mobs.gun.controller
+import mobs.bullet.bullet
 import world.earth
 
 attach Engine:
@@ -32,6 +33,7 @@ attach Engine:
         head: HeadNode = spawn_head(0.0, 4.0, 0.0)
         camera: FlycamNode = spawn_flycam(0.0, 4.0, 0.0)
         gun: GunNode = spawn_gun_textured("models/gun/scene.gltf", "models/gun/textures/1911_baseColor.png")
+        bullets: BulletPool = spawn_bullet_pool("models/bullet.gltf", 64)
 
         Engine.capture_mouse()
         print("OOP node tree scene ready")
@@ -44,9 +46,15 @@ attach Engine:
             # Drive the head from input, then propagate to children.
             update_head(head, dt)
             sync_camera_to_head(camera, head)
-            update_gun_sway(gun, head, dt)
-            update_gun_ads(gun, dt)
-            update_gun_head(gun, head)
+            update_gun_pickup(gun, head)
+            if gun.held == 1:
+                update_gun_sway(gun, head, dt)
+                update_gun_ads(gun, dt)
+                update_gun_head(gun, head)
+            else:
+                update_gun_drop(gun, dt)
+            bullet_try_fire(bullets, head, gun.held)
+            update_bullets(bullets, dt)
 
             yaw_rad: f32 = deg2rad(head.yaw)
             cam_fwd_x: f32 = 0.0 - @sin(yaw_rad)
@@ -55,6 +63,7 @@ attach Engine:
 
             Engine.render_flycam(camera)
 
+        bullet_cleanup(bullets)
         goblin_cleanup(goblins)
         gun.destroy()
         camera.destroy()

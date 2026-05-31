@@ -44,6 +44,24 @@
     ads_right: f32 = 0.0       # aimed-pose view-space offsets (tune to align the sights)
     ads_up: f32 = 0.0 - 0.4
     ads_fwd: f32 = 0.6
+    # --- drop / pickup (single-instance reuse: no spawn/destroy) ---
+    held: i32 = 1              # 1 = in hand (viewmodel), 0 = lying in the world
+    drop_x: f32 = 0.0          # world position when dropped
+    drop_y: f32 = 0.0
+    drop_z: f32 = 0.0
+    drop_yaw: f32 = 0.0        # world Y rotation when dropped
+    world_scale: f32 = 0.15    # ground scale: match the held gun_scale so size is consistent
+    pickup_radius: f32 = 3.0   # how close the player must be to pick it up
+    prev_g: i32 = 0            # edge-detect the drop key
+    prev_f: i32 = 0            # edge-detect the pickup key
+    # --- drop motion (scripted ballistic toss, no physics engine) ---
+    falling: i32 = 0           # 1 while the dropped gun is mid-air
+    drop_vx: f32 = 0.0
+    drop_vy: f32 = 0.0
+    drop_vz: f32 = 0.0
+    drop_spin: f32 = 0.0       # tumble angle (deg) while falling
+    drop_spin_rate: f32 = 520.0 # per-drop tumble speed + direction (randomized)
+    drop_count: i32 = 0        # increments each drop -> varies the random toss
 
 attach GunNode:
 
