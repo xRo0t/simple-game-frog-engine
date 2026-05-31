@@ -37,7 +37,7 @@ attach EarthNode:
         Engine.set_transform(self.ground_id, self.pos_x, self.pos_y, self.pos_z, self.rot_x, self.rot_y, self.rot_z, self.scale_x, self.scale_y, self.scale_z)
 
         goblin_vb: i32 = Engine.upload_model_or_cube("models/player/scene.gltf")
-        goblin_tex: i32 = Engine.upload_texture("models/player/textures/02_-_Default_baseColor.png")
+        goblin_tex: Texture2D = Assets.textures.load("models/player/textures/02_-_Default_baseColor.png", TextureSpec.pixel())
 
         while index < self.goblin_count:
             group_id = -1
@@ -63,8 +63,8 @@ attach EarthNode:
                 z = @cos(angle) * radius
 
             mesh_id = Engine.register_instance(goblin_vb)
-            if goblin_tex >= 0:
-                Engine.bind_texture(mesh_id, goblin_tex)
+            if goblin_tex.texture_id >= 0:
+                Engine.bind_texture(mesh_id, goblin_tex.texture_id)
             if index == 0:
                 goblins.first_goblin_id = mesh_id
             goblin_setup(goblins, index, mesh_id, x, z, group_id)

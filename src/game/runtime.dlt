@@ -25,7 +25,7 @@ attach Engine:
             return
 
         earth: EarthNode = earth_node_create()
-        earth.goblin_count = 1000
+        earth.goblin_count = 10000
         goblins: GoblinState = earth.spawn_world()
 
         # Head rig + its children: camera (rendered) and gun.

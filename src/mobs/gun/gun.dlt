@@ -61,7 +61,7 @@ fun spawn_gun(path: str) -> GunNode:
 fun spawn_gun_textured(model_path: str, texture_path: str) -> GunNode:
     gun_vb: i32 = Engine.upload_model_or_cube(model_path)
     inst: i32 = Engine.register_instance(gun_vb)
-    tex_id: i32 = Engine.upload_texture(texture_path)
-    if tex_id >= 0:
-        Engine.bind_texture(inst, tex_id)
+    gun_tex: Texture2D = Assets.textures.load(texture_path, TextureSpec.pixel())
+    if gun_tex.texture_id >= 0:
+        Engine.bind_texture(inst, gun_tex.texture_id)
     return gun_node_create(inst)
