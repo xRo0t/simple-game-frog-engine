@@ -24,7 +24,6 @@
 struct BulletPool:
     nodes: i64 = 0        # node_store of BulletNode
     count: i32 = 0
-    next: i32 = 0         # round-robin slot cursor
     speed: f32 = 60.0     # units/sec
     life_span: f32 = 2.0  # seconds before a bullet expires
     scale: f32 = 0.05
@@ -50,7 +49,21 @@ fun spawn_bullet_pool(path: str, count: i32) -> BulletPool:
     return b
 
 # Fire one bullet from the camera (head) along its look direction.
+# Uses the first INACTIVE slot; if the pool is full, the shot is skipped so we
+# never teleport a live bullet (semi-auto policy). Full-auto can raise `count`
+# or adopt an explicit oldest-reuse policy later.
 fun fire_bullet(b: BulletPool, head: HeadNode):
+    slot: i32 = 0 - 1
+    i: i32 = 0
+    while i < b.count:
+        sn: BulletNode = bullet_at(b, i)
+        if sn.active == 0:
+            slot = i
+            break
+        i = i + 1
+    if slot < 0:
+        return
+
     yr: f32 = deg2rad(head.yaw)
     pr: f32 = deg2rad(head.pitch)
     cp: f32 = @cos(pr)
@@ -58,7 +71,7 @@ fun fire_bullet(b: BulletPool, head: HeadNode):
     fy: f32 = @sin(pr)
     fz: f32 = (0.0 - @cos(yr)) * cp
 
-    bn: BulletNode = bullet_at(b, b.next)
+    bn: BulletNode = bullet_at(b, slot)
     bn.px = head.pos_x + fx * 0.6
     bn.py = head.pos_y + fy * 0.6
     bn.pz = head.pos_z + fz * 0.6
@@ -70,7 +83,6 @@ fun fire_bullet(b: BulletPool, head: HeadNode):
     bn.active = 1
     Engine.set_instance_visible(bn.id, 1)
     Engine.set_transform(bn.id, bn.px, bn.py, bn.pz, 0.0, bn.yaw, 0.0, b.scale, b.scale, b.scale)
-    b.next = (b.next + 1) % b.count
 
 # Left-click (edge-detected) fires one bullet; can_fire gates on holding the gun.
 fun bullet_try_fire(b: BulletPool, head: HeadNode, can_fire: i32):
