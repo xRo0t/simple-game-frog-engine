@@ -1,29 +1,29 @@
 ##############################
 # Simple Game - Gun Controller
 # True FPS viewmodel: the gun is rendered in VIEW space so it stays perfectly
-# fixed on screen regardless of where the head looks.
+# fixed on screen regardless of where the player looks.
 #
 # The renderer computes MVP = (P * V) * model. If we set the gun's model matrix
-# to (camera_world * local) — where camera_world = V^-1 — then
+# to (camera_world * local) - where camera_world = V^-1 - then
 #   MVP = P * V * V^-1 * local = P * local
 # so the gun is locked to the screen. local is a fixed view-space transform
-# (offset + base orientation + scale); the head's motion cancels out.
+# (offset + base orientation + scale); the player's motion cancels out.
 ##############################
 
 # Spring-damped weapon sway (the engine Spring formula inlined on flat GunNode
 # fields, matching the engine's @heap-struct mutation pattern). Turning the view
 # pushes the gun opposite the look; the spring eases it back to rest.
 # Framerate-independent: the target is built from look speed (deg/sec).
-fun update_gun_sway(gun: GunNode, head: HeadNode, dt: f32):
+fun update_gun_sway(gun: GunNode, player: PlayerNode, dt: f32):
     if gun.gun_mesh_id < 0:
         return
     if dt <= 0.0:
         return
 
-    dyaw: f32 = normalize_angle_deg(head.yaw - gun.prev_yaw)
-    dpitch: f32 = head.pitch - gun.prev_pitch
-    gun.prev_yaw = head.yaw
-    gun.prev_pitch = head.pitch
+    dyaw: f32 = normalize_angle_deg(player.yaw - gun.prev_yaw)
+    dpitch: f32 = player.pitch - gun.prev_pitch
+    gun.prev_yaw = player.yaw
+    gun.prev_pitch = player.pitch
 
     tx: f32 = clamp((0.0 - dyaw / dt) * gun.sway_amount, 0.0 - gun.sway_max, gun.sway_max)
     ty: f32 = clamp((0.0 - dpitch / dt) * gun.sway_amount, 0.0 - gun.sway_max, gun.sway_max)
@@ -45,11 +45,11 @@ fun update_gun_ads(gun: GunNode, dt: f32):
         target = 1.0
     gun.ads = damp(gun.ads, target, gun.ads_speed, dt)
 
-# Drop (G) / pickup (F) reusing the single gun instance — no spawn/destroy.
+# Drop (G) / pickup (F) reusing the single gun instance - no spawn/destroy.
 # Drop: plant the instance in the world at the player's feet. Pickup: when the
 # player is within pickup_radius, flip back to the held viewmodel. G/F are
 # edge-detected (fire once per press, not every frame they're held).
-fun update_gun_pickup(gun: GunNode, head: HeadNode):
+fun update_gun_pickup(gun: GunNode, player: PlayerNode):
     if gun.gun_mesh_id < 0:
         return
 
@@ -59,7 +59,7 @@ fun update_gun_pickup(gun: GunNode, head: HeadNode):
     if g_now == 1:
         if gun.prev_g == 0:
             if gun.held == 1:
-                yr: f32 = deg2rad(head.yaw)
+                yr: f32 = deg2rad(player.yaw)
                 fwd_x: f32 = 0.0 - @sin(yr)
                 fwd_z: f32 = 0.0 - @cos(yr)
                 right_x: f32 = @cos(yr)
@@ -73,10 +73,10 @@ fun update_gun_pickup(gun: GunNode, head: HeadNode):
                 spin_dir: f32 = 1.0
                 if rand01(dc, 4, 23) < 0.5:
                     spin_dir = 0.0 - 1.0
-                gun.drop_x = head.pos_x + fwd_x * 0.5
-                gun.drop_y = head.pos_y - 0.4
-                gun.drop_z = head.pos_z + fwd_z * 0.5
-                gun.drop_yaw = head.yaw + rand_range(dc, 6, 31, 0.0, 360.0)
+                gun.drop_x = player.pos_x + fwd_x * 0.5
+                gun.drop_y = player.pos_y - 0.4
+                gun.drop_z = player.pos_z + fwd_z * 0.5
+                gun.drop_yaw = player.yaw + rand_range(dc, 6, 31, 0.0, 360.0)
                 gun.drop_vx = fwd_x * fwd_mag + right_x * side
                 gun.drop_vy = up_mag
                 gun.drop_vz = fwd_z * fwd_mag + right_z * side
@@ -89,14 +89,14 @@ fun update_gun_pickup(gun: GunNode, head: HeadNode):
     if f_now == 1:
         if gun.prev_f == 0:
             if gun.held == 0:
-                dx: f32 = head.pos_x - gun.drop_x
-                dz: f32 = head.pos_z - gun.drop_z
+                dx: f32 = player.pos_x - gun.drop_x
+                dz: f32 = player.pos_z - gun.drop_z
                 if dx * dx + dz * dz <= gun.pickup_radius * gun.pickup_radius:
                     gun.held = 1
     gun.prev_f = f_now
 
 # Scripted "item drop" motion (Minecraft-style): a ballistic toss integrated by
-# hand — gravity + tumble, no physics engine. ~6 float ops/frame for one item.
+# hand - gravity + tumble, no physics engine. ~6 float ops/frame for one item.
 # Rests flat on the ground once it lands, then stops updating.
 fun update_gun_drop(gun: GunNode, dt: f32):
     if gun.gun_mesh_id < 0:
@@ -123,13 +123,13 @@ fun update_gun_drop(gun: GunNode, dt: f32):
     # Mid-air: tumble end-over-end (rx = drop_spin).
     Engine.set_transform(gun.gun_mesh_id, gun.drop_x, gun.drop_y, gun.drop_z, gun.drop_spin, gun.drop_yaw, 0.0, gun.world_scale, gun.world_scale, gun.world_scale)
 
-fun update_gun_head(gun: GunNode, head: HeadNode):
+fun update_gun_player(gun: GunNode, player: PlayerNode):
     if gun.gun_mesh_id < 0:
         return
 
     pi: f32 = 3.14159265
-    ax: f32 = head.pitch * pi / 180.0
-    ay: f32 = head.yaw * pi / 180.0
+    ax: f32 = player.pitch * pi / 180.0
+    ay: f32 = player.yaw * pi / 180.0
     cx: f32 = @cos(ax)
     sx: f32 = @sin(ax)
     cy: f32 = @cos(ay)
@@ -152,9 +152,9 @@ fun update_gun_head(gun: GunNode, head: HeadNode):
     cw.m9 = 0.0 - sx
     cw.m10 = cx * cy
     cw.m11 = 0.0
-    cw.m12 = head.pos_x
-    cw.m13 = head.pos_y
-    cw.m14 = head.pos_z
+    cw.m12 = player.pos_x
+    cw.m13 = player.pos_y
+    cw.m14 = player.pos_z
     cw.m15 = 1.0
 
     # local view-space transform: T(offset) * R(biases) * S(scale).

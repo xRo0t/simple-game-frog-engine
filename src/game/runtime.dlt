@@ -2,16 +2,15 @@
 # Simple Game - Runtime
 # Game-specific loop on top of Frog's Engine API.
 #
-# Rig: a Head node owns the view. The camera (a FlycamNode the engine renders
-# from) and the gun are both children of the head — input moves the head, the
-# camera is synced from it, and the gun is rigidly attached to it.
+# Rig: a player node owns the view. The active Camera3D and the gun are driven
+# from it: input moves the player, the camera is synced from it, and the gun is
+# rigidly attached to it.
 ##############################
 
 import std
 import frog
-import mobs.flycam.flycam
-import mobs.head.head
-import mobs.head.controller
+import mobs.player.player
+import mobs.player.controller
 import mobs.goblin.goblin
 import mobs.goblin.controller
 import mobs.gun.gun
@@ -29,9 +28,9 @@ attach Engine:
         earth.goblin_count = 10000
         goblins: GoblinState = earth.spawn_world()
 
-        # Head rig + its children: camera (rendered) and gun.
-        head: HeadNode = spawn_head(0.0, 4.0, 0.0)
-        camera: FlycamNode = spawn_flycam(0.0, 4.0, 0.0)
+        # Player rig + active scene camera + gun.
+        player: PlayerNode = spawn_player(0.0, 4.0, 0.0)
+        camera: Camera3D = Engine.scene.camera()
         gun: GunNode = spawn_gun_textured("models/gun/scene.gltf", "models/gun/textures/1911_baseColor.png")
         bullets: BulletPool = spawn_bullet_pool("models/bullet.gltf", 64)
 
@@ -43,31 +42,30 @@ attach Engine:
             if dt > 0.033:
                 dt = 0.033
 
-            # Drive the head from input, then propagate to children.
-            update_head(head, dt)
-            sync_camera_to_head(camera, head)
-            update_gun_pickup(gun, head)
+            # Drive the player from input, then propagate to children.
+            update_player(player, dt)
+            sync_camera_to_player(camera, player)
+            update_gun_pickup(gun, player)
             if gun.held == 1:
-                update_gun_sway(gun, head, dt)
+                update_gun_sway(gun, player, dt)
                 update_gun_ads(gun, dt)
-                update_gun_head(gun, head)
+                update_gun_player(gun, player)
             else:
                 update_gun_drop(gun, dt)
-            bullet_try_fire(bullets, head, gun.held)
+            bullet_try_fire(bullets, player, gun.held)
             update_bullets(bullets, dt)
 
-            yaw_rad: f32 = deg2rad(head.yaw)
+            yaw_rad: f32 = deg2rad(player.yaw)
             cam_fwd_x: f32 = 0.0 - @sin(yaw_rad)
             cam_fwd_z: f32 = 0.0 - @cos(yaw_rad)
-            update_goblins(goblins, dt, head.pos_x, head.pos_z, cam_fwd_x, cam_fwd_z)
+            update_goblins(goblins, dt, player.pos_x, player.pos_z, cam_fwd_x, cam_fwd_z)
 
-            Engine.render_flycam(camera)
+            Engine.render()
 
         bullet_cleanup(bullets)
         goblin_cleanup(goblins)
         gun.destroy()
-        camera.destroy()
-        head.destroy()
+        player.destroy()
         earth.destroy()
         Engine.destroy_scene()
         Engine.shutdown()
