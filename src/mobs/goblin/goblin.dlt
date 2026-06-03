@@ -2,6 +2,63 @@
 # Simple Game - Goblin Nodes
 ##############################
 
+@heap struct GoblinGroupNode:
+    id: i32 = -1
+    name: str = ""
+    active: i32 = 1
+    kind: i32 = 0
+    parent_ptr: i64 = 0
+    first_child_ptr: i64 = 0
+    next_sibling_ptr: i64 = 0
+    mesh_id: i32 = -1
+    pos_x: f32 = 0.0
+    pos_y: f32 = 0.0
+    pos_z: f32 = 0.0
+    rot_x: f32 = 0.0
+    rot_y: f32 = 0.0
+    rot_z: f32 = 0.0
+    scale_x: f32 = 1.0
+    scale_y: f32 = 1.0
+    scale_z: f32 = 1.0
+    sum_x: f32 = 0.0
+    sum_z: f32 = 0.0
+    member_count: i32 = 0
+    leader_index: i32 = -1
+    leader_x: f32 = 0.0
+    leader_z: f32 = 0.0
+    center_x: f32 = 0.0
+    center_z: f32 = 0.0
+
+@heap struct GoblinNode:
+    id: i32 = -1
+    name: str = ""
+    active: i32 = 1
+    kind: i32 = 0
+    parent_ptr: i64 = 0
+    first_child_ptr: i64 = 0
+    next_sibling_ptr: i64 = 0
+    mesh_id: i32 = -1
+    pos_x: f32 = 0.0
+    pos_y: f32 = 0.0
+    pos_z: f32 = 0.0
+    rot_x: f32 = 0.0
+    rot_y: f32 = 0.0
+    rot_z: f32 = 0.0
+    scale_x: f32 = 1.0
+    scale_y: f32 = 1.0
+    scale_z: f32 = 1.0
+    home_x: f32 = 0.0
+    home_z: f32 = 0.0
+    yaw: f32 = 0.0
+    phase: i32 = 0
+    timer: f32 = 0.0
+    phase_tick: i32 = 0
+    dir_x: f32 = 0.0
+    dir_z: f32 = 0.0
+    group_id: i32 = -1
+    role: i32 = 0
+    social_timer: f32 = 0.0
+
 struct GoblinState:
     root_ptr: i64 = 0
     groups_root_ptr: i64 = 0
@@ -30,6 +87,70 @@ fun goblin_rand_range(index: i32, phase_tick: i32, salt: i32, min: f32, max: f32
 fun goblin_yaw_from_dir(dir_x: f32, dir_z: f32) -> f32:
     return approx_atan2(0.0 - dir_x, 0.0 - dir_z) * 57.2957795
 
+fun goblin_group_node_create(index: i32) -> GoblinGroupNode:
+    node: GoblinGroupNode = GoblinGroupNode()
+    node.id = index
+    node.name = "GoblinGroup"
+    node.active = 1
+    node.kind = 5
+    node.parent_ptr = 0
+    node.first_child_ptr = 0
+    node.next_sibling_ptr = 0
+    node.mesh_id = -1
+    node.pos_x = 0.0
+    node.pos_y = 0.0
+    node.pos_z = 0.0
+    node.rot_x = 0.0
+    node.rot_y = 0.0
+    node.rot_z = 0.0
+    node.scale_x = 1.0
+    node.scale_y = 1.0
+    node.scale_z = 1.0
+    node.sum_x = 0.0
+    node.sum_z = 0.0
+    node.member_count = 0
+    node.leader_index = -1
+    node.leader_x = 0.0
+    node.leader_z = 0.0
+    node.center_x = 0.0
+    node.center_z = 0.0
+    return node
+
+fun goblin_node_create(index: i32, mesh_id: i32, px: f32, pz: f32, group_id: i32) -> GoblinNode:
+    role: i32 = 0
+    if group_id >= 0:
+        role = 1
+    node: GoblinNode = GoblinNode()
+    node.id = index
+    node.name = "Goblin"
+    node.active = 1
+    node.kind = 6
+    node.parent_ptr = 0
+    node.first_child_ptr = 0
+    node.next_sibling_ptr = 0
+    node.mesh_id = mesh_id
+    node.pos_x = px
+    node.pos_y = 0.64
+    node.pos_z = pz
+    node.rot_x = 0.0
+    node.rot_y = 0.0
+    node.rot_z = 0.0
+    node.scale_x = 0.053
+    node.scale_y = 0.053
+    node.scale_z = 0.053
+    node.home_x = px
+    node.home_z = pz
+    node.yaw = 0.0
+    node.phase = 0
+    node.timer = 0.0
+    node.phase_tick = 0
+    node.dir_x = 0.0
+    node.dir_z = 0.0
+    node.group_id = group_id
+    node.role = role
+    node.social_timer = 0.0
+    return node
+
 fun goblin_at(g: GoblinState, index: i32) -> GoblinNode:
     return node_store_get(g.goblin_nodes, index) as GoblinNode
 
@@ -37,6 +158,14 @@ fun goblin_group_at(g: GoblinState, index: i32) -> GoblinGroupNode:
     return node_store_get(g.group_nodes, index) as GoblinGroupNode
 
 attach GoblinGroupNode:
+
+    fun add_child(self, child_ptr: i64):
+        if child_ptr == 0:
+            return
+        child: Node = child_ptr as Node
+        child.parent_ptr = self as i64
+        child.next_sibling_ptr = self.first_child_ptr
+        self.first_child_ptr = child_ptr
 
     fun clear_stats(self):
         self.sum_x = 0.0

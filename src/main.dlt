@@ -11,11 +11,7 @@ Engine.properties.set_vsync(0)
 Engine.properties.set_instance_culling(1)
 Engine.debug.render_stats(1)
 
-asset_probe: str = PathOps.resolve_path("src\\models\\player\\scene.gltf")
-if PathOps.exists(asset_probe):
-    Assets.mount("src")
-else:
-    Assets.mount(PathOps.resolve_from_exe("..\\src"))
+Assets.mount("assets")
 scene: Scene = Scene.create()
 
 player_actor: Node3D = Node3D.create("Player")

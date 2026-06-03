@@ -3,7 +3,60 @@
 # GPU scene construction: ground + goblin mesh instances.
 ##############################
 
+@heap struct EarthNode:
+    id: i32 = -1
+    name: str = ""
+    active: i32 = 1
+    kind: i32 = 0
+    parent_ptr: i64 = 0
+    first_child_ptr: i64 = 0
+    next_sibling_ptr: i64 = 0
+    mesh_id: i32 = -1
+    pos_x: f32 = 0.0
+    pos_y: f32 = 0.0
+    pos_z: f32 = 0.0
+    rot_x: f32 = 0.0
+    rot_y: f32 = 0.0
+    rot_z: f32 = 0.0
+    scale_x: f32 = 1.0
+    scale_y: f32 = 1.0
+    scale_z: f32 = 1.0
+    ground_id: i32 = -1
+    ground_size: f32 = 800.0
+    goblin_count: i32 = 100000
+    group_count: i32 = 220
+    spawn_radius: f32 = 360.0
+
+fun earth_node_create() -> EarthNode:
+    node: EarthNode = EarthNode()
+    node.id = 2
+    node.name = "Earth"
+    node.active = 1
+    node.kind = 7
+    node.parent_ptr = 0
+    node.first_child_ptr = 0
+    node.next_sibling_ptr = 0
+    node.mesh_id = -1
+    node.pos_x = 0.0
+    node.pos_y = 0.0
+    node.pos_z = 0.0
+    node.rot_x = 0.0
+    node.rot_y = 0.0
+    node.rot_z = 0.0
+    node.scale_x = 1.0
+    node.scale_y = 1.0
+    node.scale_z = 1.0
+    node.ground_id = -1
+    node.ground_size = 800.0
+    node.goblin_count = 100000
+    node.group_count = 220
+    node.spawn_radius = 360.0
+    return node
+
 attach EarthNode:
+
+    fun destroy(self):
+        node_destroy(self as i64)
 
     fun spawn_world(self) -> GoblinState:
         goblins: GoblinState = goblin_create(self.goblin_count, self.group_count)
