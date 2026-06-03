@@ -8,8 +8,14 @@ import game.runtime
 
 Engine.window.create("Simple Game - OOP Nodes", 1200, 720)
 Engine.properties.set_vsync(0)
-Engine.properties.set_instance_culling(1)
+#Engine.properties.set_target_fps(60)
+Engine.properties.set_frustum_culling(1)
 Engine.debug.render_stats(1)
+#
+Engine.properties.set_render_scale(2.0)
+#print(Engine.properties.render_scale())
+#
+Engine.properties.set_gpu_preference(GpuPreference.index(1))
 
 Assets.mount("assets")
 scene: Scene = Scene.create()
