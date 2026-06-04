@@ -96,6 +96,11 @@ fun terrain_chunk_coord(pos: f32, chunk_size: i32) -> i32:
         return coord / chunk_size
     return (coord - chunk_size + 1) / chunk_size
 
+fun terrain_abs_f32(v: f32) -> f32:
+    if v < 0.0:
+        return 0.0 - v
+    return v
+
 @heap struct TerrainWorld:
     chunks: i64 = 0
     chunk_world_xs: i64 = 0
@@ -115,6 +120,9 @@ fun terrain_chunk_coord(pos: f32, chunk_size: i32) -> i32:
     pending_count: i32 = 0
     pending_cursor: i32 = 0
     stream_budget: i32 = 1
+    visibility_cursor: i32 = 0
+    visibility_budget: i32 = 96
+    occlusion_enabled: i32 = 1
 
 attach TerrainWorld:
 
@@ -146,6 +154,9 @@ attach TerrainWorld:
         world.pending_count = 0
         world.pending_cursor = 0
         world.stream_budget = 1
+        world.visibility_cursor = 0
+        world.visibility_budget = 96
+        world.occlusion_enabled = 1
         return world
 
     fun destroy(self):
@@ -324,6 +335,102 @@ attach TerrainWorld:
             self.pending_count = 0
             self.pending_cursor = 0
         return faces_total
+
+    fun chunk_in_view_cone(self, cam_x: f32, cam_z: f32, fwd_x: f32, fwd_z: f32, center_x: f32, center_z: f32) -> i32:
+        dx: f32 = center_x - cam_x
+        dz: f32 = center_z - cam_z
+        near: f32 = (self.chunk_size as f32) * 3.0
+        radius: f32 = (self.chunk_size as f32) * 0.75
+        dist2: f32 = dx * dx + dz * dz
+        if dist2 < near * near:
+            return 1
+        forward: f32 = dx * fwd_x + dz * fwd_z
+        if forward < 0.0 - near - radius:
+            return 0
+        side: f32 = dx * fwd_z - dz * fwd_x
+        side_abs: f32 = terrain_abs_f32(side)
+        if side_abs > forward * 1.75 + near + radius:
+            return 0
+        return 1
+
+    fun point_height_occluded(self, cam_x: f32, cam_y: f32, cam_z: f32, target_x: f32, target_z: f32) -> i32:
+        dx: f32 = target_x - cam_x
+        dz: f32 = target_z - cam_z
+        dist2: f32 = dx * dx + dz * dz
+        near: f32 = (self.chunk_size as f32) * 4.0
+        if dist2 < near * near:
+            return 0
+
+        target_h: i32 = terrain_height_at(target_x as i32, target_z as i32, self.seed, self.chunk_height - 1)
+        target_y: f32 = (target_h as f32) + 2.0
+        sample_count: i32 = 10
+        sample_index: i32 = 2
+        while sample_index < sample_count:
+            t: f32 = (sample_index as f32) / (sample_count as f32)
+            sx: f32 = cam_x + dx * t
+            sz: f32 = cam_z + dz * t
+            ray_y: f32 = cam_y + (target_y - cam_y) * t
+            sample_h: i32 = terrain_height_at(sx as i32, sz as i32, self.seed, self.chunk_height - 1)
+            terrain_y: f32 = (sample_h as f32) + 2.5
+            if terrain_y > ray_y + 1.5:
+                return 1
+            sample_index = sample_index + 1
+        return 0
+
+    fun chunk_height_occluded(self, cam_x: f32, cam_y: f32, cam_z: f32, center_x: f32, center_z: f32) -> i32:
+        if self.occlusion_enabled == 0:
+            return 0
+        if cam_y > (self.chunk_height as f32) + 6.0:
+            return 0
+        margin: f32 = (self.chunk_size as f32) * 0.48
+        if self.point_height_occluded(cam_x, cam_y, cam_z, center_x, center_z) == 0:
+            return 0
+        if self.point_height_occluded(cam_x, cam_y, cam_z, center_x - margin, center_z - margin) == 0:
+            return 0
+        if self.point_height_occluded(cam_x, cam_y, cam_z, center_x + margin, center_z - margin) == 0:
+            return 0
+        if self.point_height_occluded(cam_x, cam_y, cam_z, center_x - margin, center_z + margin) == 0:
+            return 0
+        if self.point_height_occluded(cam_x, cam_y, cam_z, center_x + margin, center_z + margin) == 0:
+            return 0
+        return 1
+
+    fun update_visibility(self, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32):
+        if self.chunks == 0:
+            return
+        yaw_rad: f32 = deg2rad(yaw)
+        fwd_x: f32 = 0.0 - @sin(yaw_rad)
+        fwd_z: f32 = 0.0 - @cos(yaw_rad)
+        relaxed_view: i32 = 0
+        if cam_y > (self.chunk_height as f32) + 6.0:
+            relaxed_view = 1
+        if terrain_abs_f32(pitch) > 50.0:
+            relaxed_view = 1
+        processed: i32 = 0
+        while processed < self.visibility_budget:
+            if self.visibility_cursor >= self.chunk_count:
+                self.visibility_cursor = 0
+            slot: i32 = self.visibility_cursor
+            self.visibility_cursor = self.visibility_cursor + 1
+
+            ptr: i64 = Memory.read_ptr(self.chunks + ((slot as i64) * 8))
+            if ptr != 0:
+                chunk: VoxelChunk = ptr as VoxelChunk
+                if chunk.mesh_id >= 0:
+                    chunk_x: i32 = Memory.read_i32(self.chunk_world_xs + slot * 4)
+                    chunk_z: i32 = Memory.read_i32(self.chunk_world_zs + slot * 4)
+                    visible: i32 = self.coord_is_visible(chunk_x, chunk_z)
+                    center_x: f32 = ((chunk_x * self.chunk_size) as f32) + ((self.chunk_size as f32) * 0.5)
+                    center_z: f32 = ((chunk_z * self.chunk_size) as f32) + ((self.chunk_size as f32) * 0.5)
+                    if visible == 1:
+                        if relaxed_view == 0:
+                            visible = self.chunk_in_view_cone(cam_x, cam_z, fwd_x, fwd_z, center_x, center_z)
+                    if visible == 1:
+                        if relaxed_view == 0:
+                            if self.chunk_height_occluded(cam_x, cam_y, cam_z, center_x, center_z) == 1:
+                                visible = 0
+                    Engine.set_instance_visible(chunk.mesh_id, visible)
+            processed = processed + 1
 
     fun rebuild_visible_chunks(self) -> i32:
         if self.chunks == 0:

@@ -66,11 +66,12 @@ attach EarthNode:
             self.terrain_world_ptr = 0
         node_destroy(self as i64)
 
-    fun update_terrain(self, player_x: f32, player_z: f32):
+    fun update_terrain(self, player_x: f32, player_y: f32, player_z: f32, player_yaw: f32, player_pitch: f32):
         if self.terrain_world_ptr == 0:
             return
         terrain: TerrainWorld = self.terrain_world_ptr as TerrainWorld
         terrain.update_around(player_x, player_z)
+        terrain.update_visibility(player_x, player_y, player_z, player_yaw, player_pitch)
 
     fun spawn_world(self) -> GoblinState:
         goblins: GoblinState = goblin_create(self.goblin_count, self.group_count)
@@ -103,7 +104,7 @@ attach EarthNode:
         self.scale_z = self.ground_size
         Engine.set_transform(self.ground_id, self.pos_x, self.pos_y, self.pos_z, self.rot_x, self.rot_y, self.rot_z, self.scale_x, self.scale_y, self.scale_z)
 
-        terrain: TerrainWorld = TerrainWorld.create(15, 40, 32)
+        terrain: TerrainWorld = TerrainWorld.create(25, 40, 32)
         terrain_faces: i32 = terrain.generate_world(1337)
         self.terrain_world_ptr = terrain as i64
         print("Voxel terrain faces " + Convert.i32_to_str(terrain_faces))
