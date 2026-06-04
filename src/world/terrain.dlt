@@ -23,12 +23,27 @@ fun terrain_sand() -> i32:
 fun terrain_water() -> i32:
     return 5
 
+fun terrain_is_solid_block(block_id: i32) -> i32:
+    if block_id == terrain_air():
+        return 0
+    if block_id == terrain_water():
+        return 0
+    return 1
+
 fun terrain_configure_palette(chunk: VoxelChunk):
-    chunk.set_block_color(terrain_grass(), 0.25, 0.70, 0.28)
-    chunk.set_block_color(terrain_dirt(), 0.46, 0.30, 0.16)
-    chunk.set_block_color(terrain_stone(), 0.48, 0.50, 0.52)
-    chunk.set_block_color(terrain_sand(), 0.82, 0.70, 0.42)
-    chunk.set_block_color(terrain_water(), 0.08, 0.34, 0.82)
+    chunk.set_block_color(terrain_grass(), 1.0, 1.0, 1.0)
+    chunk.set_block_color(terrain_dirt(), 1.0, 1.0, 1.0)
+    chunk.set_block_color(terrain_stone(), 1.0, 1.0, 1.0)
+    chunk.set_block_color(terrain_sand(), 1.0, 1.0, 1.0)
+    chunk.set_block_color(terrain_water(), 1.0, 1.0, 1.0)
+    chunk.set_texture_atlas(3, 2, 40)
+    chunk.set_block_tile(terrain_grass(), 1)
+    chunk.set_block_face_tile(terrain_grass(), 2, 2)
+    chunk.set_block_face_tile(terrain_grass(), 3, 0)
+    chunk.set_block_tile(terrain_dirt(), 2)
+    chunk.set_block_tile(terrain_stone(), 3)
+    chunk.set_block_tile(terrain_sand(), 4)
+    chunk.set_block_tile(terrain_water(), 5)
 
 fun terrain_height_at(wx: i32, wz: i32, seed: i32, max_height: i32) -> i32:
     idx: i32 = (wz + 4096) * 8192 + (wx + 4096)
@@ -96,6 +111,18 @@ fun terrain_chunk_coord(pos: f32, chunk_size: i32) -> i32:
         return coord / chunk_size
     return (coord - chunk_size + 1) / chunk_size
 
+fun terrain_floor_coord(pos: f32) -> i32:
+    coord: i32 = pos as i32
+    if pos < 0.0:
+        if (coord as f32) > pos:
+            coord = coord - 1
+    return coord
+
+fun terrain_chunk_coord_from_block(coord: i32, chunk_size: i32) -> i32:
+    if coord >= 0:
+        return coord / chunk_size
+    return (coord - chunk_size + 1) / chunk_size
+
 fun terrain_abs_f32(v: f32) -> f32:
     if v < 0.0:
         return 0.0 - v
@@ -123,6 +150,7 @@ fun terrain_abs_f32(v: f32) -> f32:
     visibility_cursor: i32 = 0
     visibility_budget: i32 = 96
     occlusion_enabled: i32 = 1
+    grass_texture_id: i32 = -1
 
 attach TerrainWorld:
 
@@ -157,6 +185,7 @@ attach TerrainWorld:
         world.visibility_cursor = 0
         world.visibility_budget = 96
         world.occlusion_enabled = 1
+        world.grass_texture_id = -1
         return world
 
     fun destroy(self):
@@ -198,6 +227,137 @@ attach TerrainWorld:
         if index >= self.chunk_count:
             return
         Memory.write_ptr(self.chunks + ((index as i64) * 8), chunk as i64)
+
+    fun load_grass_texture(self):
+        if self.grass_texture_id >= 0:
+            return
+        spec: TextureSpec = TextureSpec.pixel()
+        tex: Texture2D = Assets.textures.load("textures/terrain/terrain_atlas.png", spec)
+        if tex.texture_id >= 0:
+            self.grass_texture_id = tex.texture_id
+
+    fun chunk_ptr_for_slot(self, slot: i32) -> i64:
+        if self.chunks == 0:
+            return 0
+        if slot < 0:
+            return 0
+        if slot >= self.chunk_count:
+            return 0
+        return Memory.read_ptr(self.chunks + ((slot as i64) * 8))
+
+    fun block_at_world(self, block_x: i32, block_y: i32, block_z: i32) -> i32:
+        if block_y < 0:
+            return terrain_air()
+        if block_y >= self.chunk_height:
+            return terrain_air()
+        chunk_x: i32 = terrain_chunk_coord_from_block(block_x, self.chunk_size)
+        chunk_z: i32 = terrain_chunk_coord_from_block(block_z, self.chunk_size)
+        slot: i32 = self.find_chunk_coord(chunk_x, chunk_z)
+        if slot < 0:
+            return terrain_air()
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr == 0:
+            return terrain_air()
+        chunk: VoxelChunk = ptr as VoxelChunk
+        local_x: i32 = block_x - chunk_x * self.chunk_size
+        local_z: i32 = block_z - chunk_z * self.chunk_size
+        return chunk.get(local_x, block_y, local_z)
+
+    fun is_solid_world(self, block_x: i32, block_y: i32, block_z: i32) -> i32:
+        return terrain_is_solid_block(self.block_at_world(block_x, block_y, block_z))
+
+    fun aabb_hits_solid(self, min_x: f32, min_y: f32, min_z: f32, max_x: f32, max_y: f32, max_z: f32) -> i32:
+        min_bx: i32 = terrain_floor_coord(min_x)
+        min_by: i32 = terrain_floor_coord(min_y)
+        min_bz: i32 = terrain_floor_coord(min_z)
+        max_bx: i32 = terrain_floor_coord(max_x - 0.001)
+        max_by: i32 = terrain_floor_coord(max_y - 0.001)
+        max_bz: i32 = terrain_floor_coord(max_z - 0.001)
+        by: i32 = min_by
+        while by <= max_by:
+            bz: i32 = min_bz
+            while bz <= max_bz:
+                bx: i32 = min_bx
+                while bx <= max_bx:
+                    if self.is_solid_world(bx, by, bz) == 1:
+                        return 1
+                    bx = bx + 1
+                bz = bz + 1
+            by = by + 1
+        return 0
+
+    fun highest_solid_top_for_aabb(self, min_x: f32, min_z: f32, max_x: f32, max_z: f32, min_y: f32, max_y: f32) -> f32:
+        min_bx: i32 = terrain_floor_coord(min_x)
+        min_by: i32 = terrain_floor_coord(min_y)
+        min_bz: i32 = terrain_floor_coord(min_z)
+        max_bx: i32 = terrain_floor_coord(max_x - 0.001)
+        max_by: i32 = terrain_floor_coord(max_y - 0.001)
+        max_bz: i32 = terrain_floor_coord(max_z - 0.001)
+        best: f32 = 0.0 - 100000.0
+        by: i32 = min_by
+        while by <= max_by:
+            bz: i32 = min_bz
+            while bz <= max_bz:
+                bx: i32 = min_bx
+                while bx <= max_bx:
+                    if self.is_solid_world(bx, by, bz) == 1:
+                        top: f32 = (by + 1) as f32
+                        if top > best:
+                            best = top
+                    bx = bx + 1
+                bz = bz + 1
+            by = by + 1
+        return best
+
+    fun ensure_slot_target(self, slot: i32, chunk_x: i32, chunk_z: i32):
+        if self.chunks == 0:
+            return
+        if slot < 0:
+            return
+        if slot >= self.chunk_count:
+            return
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        chunk: VoxelChunk = ptr as VoxelChunk
+        if ptr == 0:
+            chunk = VoxelChunk.create(self.chunk_size, self.chunk_height, self.chunk_size)
+            self.set_chunk(slot, chunk)
+        Memory.write_i32(self.chunk_world_xs + slot * 4, chunk_x)
+        Memory.write_i32(self.chunk_world_zs + slot * 4, chunk_z)
+        origin_x: i32 = chunk_x * self.chunk_size
+        origin_z: i32 = chunk_z * self.chunk_size
+        chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
+
+    fun relink_slot_neighbors(self, slot: i32):
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr == 0:
+            return
+        chunk: VoxelChunk = ptr as VoxelChunk
+        chunk_x: i32 = Memory.read_i32(self.chunk_world_xs + slot * 4)
+        chunk_z: i32 = Memory.read_i32(self.chunk_world_zs + slot * 4)
+
+        neg_x: i64 = self.chunk_ptr_for_slot(self.find_chunk_coord(chunk_x - 1, chunk_z))
+        pos_x: i64 = self.chunk_ptr_for_slot(self.find_chunk_coord(chunk_x + 1, chunk_z))
+        neg_z: i64 = self.chunk_ptr_for_slot(self.find_chunk_coord(chunk_x, chunk_z - 1))
+        pos_z: i64 = self.chunk_ptr_for_slot(self.find_chunk_coord(chunk_x, chunk_z + 1))
+        chunk.set_neighbor_ptr(0, neg_x)
+        chunk.set_neighbor_ptr(1, pos_x)
+        chunk.set_neighbor_ptr(2, 0)
+        chunk.set_neighbor_ptr(3, 0)
+        chunk.set_neighbor_ptr(4, neg_z)
+        chunk.set_neighbor_ptr(5, pos_z)
+
+    fun relink_all_neighbors(self):
+        i: i32 = 0
+        while i < self.chunk_count:
+            self.relink_slot_neighbors(i)
+            i = i + 1
+
+    fun relink_neighbors_around(self, chunk_x: i32, chunk_z: i32):
+        self.relink_slot_neighbors(self.find_chunk_coord(chunk_x, chunk_z))
+        self.relink_slot_neighbors(self.find_chunk_coord(chunk_x - 1, chunk_z))
+        self.relink_slot_neighbors(self.find_chunk_coord(chunk_x + 1, chunk_z))
+        self.relink_slot_neighbors(self.find_chunk_coord(chunk_x, chunk_z - 1))
+        self.relink_slot_neighbors(self.find_chunk_coord(chunk_x, chunk_z + 1))
 
     fun coord_is_visible(self, chunk_x: i32, chunk_z: i32) -> i32:
         half_grid: i32 = self.grid_size / 2
@@ -291,28 +451,52 @@ attach TerrainWorld:
             gz = gz + 1
 
     fun build_slot_target(self, slot: i32, chunk_x: i32, chunk_z: i32) -> i32:
-        if self.chunks == 0:
+        self.ensure_slot_target(slot, chunk_x, chunk_z)
+        self.generate_slot_blocks(slot)
+        self.relink_neighbors_around(chunk_x, chunk_z)
+        faces: i32 = self.upload_slot_mesh(slot)
+        faces = faces + self.refresh_chunk_mesh_at(chunk_x - 1, chunk_z)
+        faces = faces + self.refresh_chunk_mesh_at(chunk_x + 1, chunk_z)
+        faces = faces + self.refresh_chunk_mesh_at(chunk_x, chunk_z - 1)
+        faces = faces + self.refresh_chunk_mesh_at(chunk_x, chunk_z + 1)
+        return faces
+
+    fun generate_slot_blocks(self, slot: i32) -> i32:
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr == 0:
             return 0
-        if slot < 0:
-            return 0
-        if slot >= self.chunk_count:
-            return 0
+        chunk: VoxelChunk = ptr as VoxelChunk
+        chunk_x: i32 = Memory.read_i32(self.chunk_world_xs + slot * 4)
+        chunk_z: i32 = Memory.read_i32(self.chunk_world_zs + slot * 4)
         origin_x: i32 = chunk_x * self.chunk_size
         origin_z: i32 = chunk_z * self.chunk_size
-        ptr: i64 = Memory.read_ptr(self.chunks + ((slot as i64) * 8))
-        chunk: VoxelChunk = ptr as VoxelChunk
-        if ptr == 0:
-            chunk = VoxelChunk.create(self.chunk_size, self.chunk_height, self.chunk_size)
-            self.set_chunk(slot, chunk)
         terrain_generate_chunk(chunk, self.seed, origin_x, origin_z)
+        chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
+        return 1
+
+    fun refresh_chunk_mesh_at(self, chunk_x: i32, chunk_z: i32) -> i32:
+        slot: i32 = self.find_chunk_coord(chunk_x, chunk_z)
+        if slot < 0:
+            return 0
+        return self.upload_slot_mesh(slot)
+
+    fun upload_slot_mesh(self, slot: i32) -> i32:
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr == 0:
+            return 0
+        chunk: VoxelChunk = ptr as VoxelChunk
+        chunk_x: i32 = Memory.read_i32(self.chunk_world_xs + slot * 4)
+        chunk_z: i32 = Memory.read_i32(self.chunk_world_zs + slot * 4)
+        origin_x: i32 = chunk_x * self.chunk_size
+        origin_z: i32 = chunk_z * self.chunk_size
         chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
         faces: i32 = chunk.visible_face_count()
         mesh_id: i32 = chunk.upload()
-        if mesh_id >= 0:
-            Memory.write_i32(self.chunk_world_xs + slot * 4, chunk_x)
-            Memory.write_i32(self.chunk_world_zs + slot * 4, chunk_z)
-            return faces
-        return 0
+        if mesh_id < 0:
+            return 0
+        if self.grass_texture_id >= 0:
+            Engine.bind_texture(mesh_id, self.grass_texture_id)
+        return faces
 
     fun process_streaming(self) -> i32:
         if self.pending_cursor >= self.pending_count:
@@ -444,7 +628,27 @@ attach TerrainWorld:
                 idx: i32 = gz * self.grid_size + gx
                 world_chunk_x: i32 = self.center_chunk_x + gx - half_grid
                 world_chunk_z: i32 = self.center_chunk_z + gz - half_grid
-                self.total_faces = self.total_faces + self.build_slot_target(idx, world_chunk_x, world_chunk_z)
+                self.ensure_slot_target(idx, world_chunk_x, world_chunk_z)
+                gx = gx + 1
+            gz = gz + 1
+
+        gz = 0
+        while gz < self.grid_size:
+            gx = 0
+            while gx < self.grid_size:
+                idx = gz * self.grid_size + gx
+                self.generate_slot_blocks(idx)
+                gx = gx + 1
+            gz = gz + 1
+
+        self.relink_all_neighbors()
+
+        gz = 0
+        while gz < self.grid_size:
+            gx = 0
+            while gx < self.grid_size:
+                idx = gz * self.grid_size + gx
+                self.total_faces = self.total_faces + self.upload_slot_mesh(idx)
                 gx = gx + 1
             gz = gz + 1
         return self.total_faces
@@ -454,6 +658,7 @@ attach TerrainWorld:
         self.center_chunk_x = 0
         self.center_chunk_z = 0
         self.clear_pending()
+        self.load_grass_texture()
         return self.rebuild_visible_chunks()
 
     fun update_around(self, player_x: f32, player_z: f32) -> i32:

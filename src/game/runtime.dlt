@@ -17,6 +17,7 @@ import mobs.gun.gun
 import mobs.gun.controller
 import mobs.bullet.bullet
 import world.earth
+import world.terrain
 
 attach Engine:
 
@@ -27,9 +28,11 @@ attach Engine:
         earth: EarthNode = earth_node_create()
         earth.goblin_count = 0
         goblins: GoblinState = earth.spawn_world()
+        terrain: TerrainWorld = earth.terrain_world_ptr as TerrainWorld
 
         # Player rig + active scene camera + gun.
         player: PlayerNode = spawn_player(0.0, 4.0, 0.0)
+        snap_player_to_terrain(player, terrain)
         camera: Camera3D = Engine.scene.camera()
         gun: GunNode = spawn_gun_textured("models/gun/scene.gltf", "models/gun/textures/1911_baseColor.png")
         bullets: BulletPool = spawn_bullet_pool("models/bullet.gltf", 64)
@@ -43,7 +46,7 @@ attach Engine:
                 dt = 0.033
 
             # Drive the player from input, then propagate to children.
-            update_player(player, dt)
+            update_player(player, terrain, dt)
             earth.update_terrain(player.pos_x, player.pos_y, player.pos_z, player.yaw, player.pitch)
             sync_camera_to_player(camera, player)
             update_gun_pickup(gun, player)
