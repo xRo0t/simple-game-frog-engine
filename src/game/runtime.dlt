@@ -25,7 +25,7 @@ attach Engine:
             return
 
         earth: EarthNode = earth_node_create()
-        earth.goblin_count = 10000
+        earth.goblin_count = 0
         goblins: GoblinState = earth.spawn_world()
 
         # Player rig + active scene camera + gun.
@@ -44,6 +44,7 @@ attach Engine:
 
             # Drive the player from input, then propagate to children.
             update_player(player, dt)
+            earth.update_terrain(player.pos_x, player.pos_z)
             sync_camera_to_player(camera, player)
             update_gun_pickup(gun, player)
             if gun.held == 1:

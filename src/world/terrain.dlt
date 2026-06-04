@@ -87,20 +87,66 @@ fun terrain_generate_chunk(chunk: VoxelChunk, seed: i32, origin_x: i32, origin_z
             x = x + 1
         z = z + 1
 
+fun terrain_chunk_coord(pos: f32, chunk_size: i32) -> i32:
+    coord: i32 = pos as i32
+    if pos < 0.0:
+        if (coord as f32) > pos:
+            coord = coord - 1
+    if coord >= 0:
+        return coord / chunk_size
+    return (coord - chunk_size + 1) / chunk_size
+
 @heap struct TerrainWorld:
     chunks: i64 = 0
+    chunk_world_xs: i64 = 0
+    chunk_world_zs: i64 = 0
+    pending_slots: i64 = 0
+    pending_xs: i64 = 0
+    pending_zs: i64 = 0
+    pending_flags: i64 = 0
     chunk_count: i32 = 0
     grid_size: i32 = 0
     chunk_size: i32 = 0
     chunk_height: i32 = 0
     total_faces: i32 = 0
+    seed: i32 = 0
+    center_chunk_x: i32 = 0
+    center_chunk_z: i32 = 0
+    pending_count: i32 = 0
+    pending_cursor: i32 = 0
+    stream_budget: i32 = 1
 
 attach TerrainWorld:
 
     static fun create(grid_size: i32, chunk_size: i32, chunk_height: i32) -> TerrainWorld:
         count: i32 = grid_size * grid_size
         chunks: i64 = Memory.malloc_zeroed((count as i64) * 8)
-        return TerrainWorld(chunks=chunks, chunk_count=count, grid_size=grid_size, chunk_size=chunk_size, chunk_height=chunk_height, total_faces=0)
+        chunk_world_xs: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        chunk_world_zs: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        pending_slots: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        pending_xs: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        pending_zs: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        pending_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        world: TerrainWorld = TerrainWorld()
+        world.chunks = chunks
+        world.chunk_world_xs = chunk_world_xs
+        world.chunk_world_zs = chunk_world_zs
+        world.pending_slots = pending_slots
+        world.pending_xs = pending_xs
+        world.pending_zs = pending_zs
+        world.pending_flags = pending_flags
+        world.chunk_count = count
+        world.grid_size = grid_size
+        world.chunk_size = chunk_size
+        world.chunk_height = chunk_height
+        world.total_faces = 0
+        world.seed = 0
+        world.center_chunk_x = 0
+        world.center_chunk_z = 0
+        world.pending_count = 0
+        world.pending_cursor = 0
+        world.stream_budget = 1
+        return world
 
     fun destroy(self):
         if self.chunks != 0:
@@ -113,6 +159,24 @@ attach TerrainWorld:
                 i = i + 1
             Memory.free(self.chunks)
             self.chunks = 0
+        if self.chunk_world_xs != 0:
+            Memory.free(self.chunk_world_xs)
+            self.chunk_world_xs = 0
+        if self.chunk_world_zs != 0:
+            Memory.free(self.chunk_world_zs)
+            self.chunk_world_zs = 0
+        if self.pending_slots != 0:
+            Memory.free(self.pending_slots)
+            self.pending_slots = 0
+        if self.pending_xs != 0:
+            Memory.free(self.pending_xs)
+            self.pending_xs = 0
+        if self.pending_zs != 0:
+            Memory.free(self.pending_zs)
+            self.pending_zs = 0
+        if self.pending_flags != 0:
+            Memory.free(self.pending_flags)
+            self.pending_flags = 0
         Memory.free(self as i64)
 
     fun set_chunk(self, index: i32, chunk: VoxelChunk):
@@ -124,29 +188,174 @@ attach TerrainWorld:
             return
         Memory.write_ptr(self.chunks + ((index as i64) * 8), chunk as i64)
 
-    fun generate_world(self, seed: i32) -> i32:
+    fun coord_is_visible(self, chunk_x: i32, chunk_z: i32) -> i32:
+        half_grid: i32 = self.grid_size / 2
+        min_x: i32 = self.center_chunk_x - half_grid
+        max_x: i32 = self.center_chunk_x + half_grid
+        min_z: i32 = self.center_chunk_z - half_grid
+        max_z: i32 = self.center_chunk_z + half_grid
+        if chunk_x < min_x:
+            return 0
+        if chunk_x > max_x:
+            return 0
+        if chunk_z < min_z:
+            return 0
+        if chunk_z > max_z:
+            return 0
+        return 1
+
+    fun find_chunk_coord(self, chunk_x: i32, chunk_z: i32) -> i32:
+        if self.chunks == 0:
+            return 0 - 1
+        i: i32 = 0
+        while i < self.chunk_count:
+            ptr: i64 = Memory.read_ptr(self.chunks + ((i as i64) * 8))
+            if ptr != 0:
+                sx: i32 = Memory.read_i32(self.chunk_world_xs + i * 4)
+                sz: i32 = Memory.read_i32(self.chunk_world_zs + i * 4)
+                if sx == chunk_x:
+                    if sz == chunk_z:
+                        return i
+            i = i + 1
+        return 0 - 1
+
+    fun clear_pending(self):
+        if self.pending_flags == 0:
+            return
+        i: i32 = 0
+        while i < self.chunk_count:
+            Memory.write_i32(self.pending_flags + i * 4, 0)
+            i = i + 1
+        self.pending_count = 0
+        self.pending_cursor = 0
+
+    fun find_reusable_slot(self) -> i32:
+        i: i32 = 0
+        while i < self.chunk_count:
+            if Memory.read_i32(self.pending_flags + i * 4) == 0:
+                ptr: i64 = Memory.read_ptr(self.chunks + ((i as i64) * 8))
+                if ptr == 0:
+                    return i
+            i = i + 1
+        i = 0
+        while i < self.chunk_count:
+            if Memory.read_i32(self.pending_flags + i * 4) == 0:
+                sx: i32 = Memory.read_i32(self.chunk_world_xs + i * 4)
+                sz: i32 = Memory.read_i32(self.chunk_world_zs + i * 4)
+                if self.coord_is_visible(sx, sz) == 0:
+                    return i
+            i = i + 1
+        return 0 - 1
+
+    fun queue_slot_target(self, slot: i32, chunk_x: i32, chunk_z: i32):
+        if slot < 0:
+            return
+        if slot >= self.chunk_count:
+            return
+        if self.pending_count >= self.chunk_count:
+            return
+        if Memory.read_i32(self.pending_flags + slot * 4) != 0:
+            return
+        idx: i32 = self.pending_count
+        Memory.write_i32(self.pending_slots + idx * 4, slot)
+        Memory.write_i32(self.pending_xs + idx * 4, chunk_x)
+        Memory.write_i32(self.pending_zs + idx * 4, chunk_z)
+        Memory.write_i32(self.pending_flags + slot * 4, 1)
+        self.pending_count = idx + 1
+
+    fun schedule_missing_chunks(self):
+        self.clear_pending()
+        half_grid: i32 = self.grid_size / 2
+        gz: i32 = 0
+        while gz < self.grid_size:
+            gx: i32 = 0
+            while gx < self.grid_size:
+                want_x: i32 = self.center_chunk_x + gx - half_grid
+                want_z: i32 = self.center_chunk_z + gz - half_grid
+                if self.find_chunk_coord(want_x, want_z) < 0:
+                    slot: i32 = self.find_reusable_slot()
+                    if slot >= 0:
+                        self.queue_slot_target(slot, want_x, want_z)
+                gx = gx + 1
+            gz = gz + 1
+
+    fun build_slot_target(self, slot: i32, chunk_x: i32, chunk_z: i32) -> i32:
+        if self.chunks == 0:
+            return 0
+        if slot < 0:
+            return 0
+        if slot >= self.chunk_count:
+            return 0
+        origin_x: i32 = chunk_x * self.chunk_size
+        origin_z: i32 = chunk_z * self.chunk_size
+        ptr: i64 = Memory.read_ptr(self.chunks + ((slot as i64) * 8))
+        chunk: VoxelChunk = ptr as VoxelChunk
+        if ptr == 0:
+            chunk = VoxelChunk.create(self.chunk_size, self.chunk_height, self.chunk_size)
+            self.set_chunk(slot, chunk)
+        terrain_generate_chunk(chunk, self.seed, origin_x, origin_z)
+        chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
+        faces: i32 = chunk.visible_face_count()
+        mesh_id: i32 = chunk.upload()
+        if mesh_id >= 0:
+            Memory.write_i32(self.chunk_world_xs + slot * 4, chunk_x)
+            Memory.write_i32(self.chunk_world_zs + slot * 4, chunk_z)
+            return faces
+        return 0
+
+    fun process_streaming(self) -> i32:
+        if self.pending_cursor >= self.pending_count:
+            return 0
+        faces_total: i32 = 0
+        processed: i32 = 0
+        while processed < self.stream_budget:
+            if self.pending_cursor >= self.pending_count:
+                processed = self.stream_budget
+            else:
+                idx: i32 = self.pending_cursor
+                slot: i32 = Memory.read_i32(self.pending_slots + idx * 4)
+                chunk_x: i32 = Memory.read_i32(self.pending_xs + idx * 4)
+                chunk_z: i32 = Memory.read_i32(self.pending_zs + idx * 4)
+                faces_total = faces_total + self.build_slot_target(slot, chunk_x, chunk_z)
+                Memory.write_i32(self.pending_flags + slot * 4, 0)
+                self.pending_cursor = self.pending_cursor + 1
+                processed = processed + 1
+        if self.pending_cursor >= self.pending_count:
+            self.pending_count = 0
+            self.pending_cursor = 0
+        return faces_total
+
+    fun rebuild_visible_chunks(self) -> i32:
         if self.chunks == 0:
             return 0
         self.total_faces = 0
-        span: i32 = self.grid_size * self.chunk_size
-        half_span: i32 = span / 2
+        half_grid: i32 = self.grid_size / 2
         gz: i32 = 0
         while gz < self.grid_size:
             gx: i32 = 0
             while gx < self.grid_size:
                 idx: i32 = gz * self.grid_size + gx
-                origin_x: i32 = gx * self.chunk_size - half_span
-                origin_z: i32 = gz * self.chunk_size - half_span
-                chunk: VoxelChunk = VoxelChunk.create(self.chunk_size, self.chunk_height, self.chunk_size)
-                terrain_generate_chunk(chunk, seed, origin_x, origin_z)
-                chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
-                faces: i32 = chunk.visible_face_count()
-                mesh_id: i32 = chunk.upload()
-                if mesh_id >= 0:
-                    self.set_chunk(idx, chunk)
-                    self.total_faces = self.total_faces + faces
-                else:
-                    chunk.destroy()
+                world_chunk_x: i32 = self.center_chunk_x + gx - half_grid
+                world_chunk_z: i32 = self.center_chunk_z + gz - half_grid
+                self.total_faces = self.total_faces + self.build_slot_target(idx, world_chunk_x, world_chunk_z)
                 gx = gx + 1
             gz = gz + 1
         return self.total_faces
+
+    fun generate_world(self, seed: i32) -> i32:
+        self.seed = seed
+        self.center_chunk_x = 0
+        self.center_chunk_z = 0
+        self.clear_pending()
+        return self.rebuild_visible_chunks()
+
+    fun update_around(self, player_x: f32, player_z: f32) -> i32:
+        new_center_x: i32 = terrain_chunk_coord(player_x, self.chunk_size)
+        new_center_z: i32 = terrain_chunk_coord(player_z, self.chunk_size)
+        if new_center_x == self.center_chunk_x:
+            if new_center_z == self.center_chunk_z:
+                return self.process_streaming()
+        self.center_chunk_x = new_center_x
+        self.center_chunk_z = new_center_z
+        self.schedule_missing_chunks()
+        return self.process_streaming()
