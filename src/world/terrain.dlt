@@ -1,0 +1,152 @@
+##############################
+# Simple Game - Terrain
+# Game-specific chunked terrain content built on Frog's generic VoxelChunk.
+##############################
+
+import frog
+
+fun terrain_air() -> i32:
+    return BlockId.air()
+
+fun terrain_grass() -> i32:
+    return 1
+
+fun terrain_dirt() -> i32:
+    return 2
+
+fun terrain_stone() -> i32:
+    return 3
+
+fun terrain_sand() -> i32:
+    return 4
+
+fun terrain_water() -> i32:
+    return 5
+
+fun terrain_configure_palette(chunk: VoxelChunk):
+    chunk.set_block_color(terrain_grass(), 0.25, 0.70, 0.28)
+    chunk.set_block_color(terrain_dirt(), 0.46, 0.30, 0.16)
+    chunk.set_block_color(terrain_stone(), 0.48, 0.50, 0.52)
+    chunk.set_block_color(terrain_sand(), 0.82, 0.70, 0.42)
+    chunk.set_block_color(terrain_water(), 0.08, 0.34, 0.82)
+
+fun terrain_height_at(wx: i32, wz: i32, seed: i32, max_height: i32) -> i32:
+    idx: i32 = (wz + 4096) * 8192 + (wx + 4096)
+    fx: f32 = wx as f32
+    fz: f32 = wz as f32
+    fs: f32 = seed as f32
+
+    plains: f32 = 5.0
+    plains = plains + @sin((fx + fs * 0.17) * 0.045) * 1.6
+    plains = plains + @cos((fz - fs * 0.11) * 0.038) * 1.4
+    plains = plains + @sin((fx + fz) * 0.018) * 1.1
+    plains = plains + rand_range(idx, seed, 23, -0.8, 0.8)
+
+    mountain_mask: f32 = @sin((fx + 180.0) * 0.031 + fs * 0.002) * @cos((fz - 90.0) * 0.027 + fs * 0.004)
+    if mountain_mask > 0.62:
+        plains = plains + (mountain_mask - 0.62) * 34.0
+        plains = plains + rand_range(idx, seed, 41, 0.0, 2.0)
+
+    h: i32 = plains as i32
+    if h < 2:
+        h = 2
+    if h > max_height - 1:
+        h = max_height - 1
+    return h
+
+fun terrain_generate_chunk(chunk: VoxelChunk, seed: i32, origin_x: i32, origin_z: i32):
+    terrain_configure_palette(chunk)
+    chunk.fill(terrain_air())
+
+    top_limit: i32 = chunk.size_y - 1
+
+    x: i32 = 0
+    y: i32 = 0
+    z: i32 = 0
+    while z < chunk.size_z:
+        x = 0
+        while x < chunk.size_x:
+            wx: i32 = origin_x + x
+            wz: i32 = origin_z + z
+            h: i32 = terrain_height_at(wx, wz, seed, top_limit)
+            y = 0
+            while y < chunk.size_y:
+                if y <= h:
+                    if y == h:
+                        if h > 11:
+                            chunk.set(x, y, z, terrain_stone())
+                        else:
+                            chunk.set(x, y, z, terrain_grass())
+                    elif y > h - 3:
+                        chunk.set(x, y, z, terrain_dirt())
+                    else:
+                        chunk.set(x, y, z, terrain_stone())
+                else:
+                    chunk.set(x, y, z, terrain_air())
+                y = y + 1
+            x = x + 1
+        z = z + 1
+
+@heap struct TerrainWorld:
+    chunks: i64 = 0
+    chunk_count: i32 = 0
+    grid_size: i32 = 0
+    chunk_size: i32 = 0
+    chunk_height: i32 = 0
+    total_faces: i32 = 0
+
+attach TerrainWorld:
+
+    static fun create(grid_size: i32, chunk_size: i32, chunk_height: i32) -> TerrainWorld:
+        count: i32 = grid_size * grid_size
+        chunks: i64 = Memory.malloc_zeroed((count as i64) * 8)
+        return TerrainWorld(chunks=chunks, chunk_count=count, grid_size=grid_size, chunk_size=chunk_size, chunk_height=chunk_height, total_faces=0)
+
+    fun destroy(self):
+        if self.chunks != 0:
+            i: i32 = 0
+            while i < self.chunk_count:
+                ptr: i64 = Memory.read_ptr(self.chunks + ((i as i64) * 8))
+                if ptr != 0:
+                    chunk: VoxelChunk = ptr as VoxelChunk
+                    chunk.destroy()
+                i = i + 1
+            Memory.free(self.chunks)
+            self.chunks = 0
+        Memory.free(self as i64)
+
+    fun set_chunk(self, index: i32, chunk: VoxelChunk):
+        if self.chunks == 0:
+            return
+        if index < 0:
+            return
+        if index >= self.chunk_count:
+            return
+        Memory.write_ptr(self.chunks + ((index as i64) * 8), chunk as i64)
+
+    fun generate_world(self, seed: i32) -> i32:
+        if self.chunks == 0:
+            return 0
+        self.total_faces = 0
+        span: i32 = self.grid_size * self.chunk_size
+        half_span: i32 = span / 2
+        gz: i32 = 0
+        while gz < self.grid_size:
+            gx: i32 = 0
+            while gx < self.grid_size:
+                idx: i32 = gz * self.grid_size + gx
+                origin_x: i32 = gx * self.chunk_size - half_span
+                origin_z: i32 = gz * self.chunk_size - half_span
+                chunk: VoxelChunk = VoxelChunk.create(self.chunk_size, self.chunk_height, self.chunk_size)
+                terrain_generate_chunk(chunk, seed, origin_x, origin_z)
+                chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
+                faces: i32 = chunk.visible_face_count()
+                mesh_id: i32 = chunk.upload()
+                if mesh_id >= 0:
+                    self.set_chunk(idx, chunk)
+                    self.total_faces = self.total_faces + faces
+                else:
+                    chunk.destroy()
+                gx = gx + 1
+            gz = gz + 1
+        return self.total_faces

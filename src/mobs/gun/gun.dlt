@@ -3,7 +3,7 @@
 # Uploads the gun model once and keeps a single GPU instance locked
 # to the camera each frame so it reads as "held" by the player.
 #
-# Standalone struct (not a Node) - the gun is driven directly as a GPU
+# Standalone struct (not a Node) — the gun is driven directly as a GPU
 # instance transform each frame, so it needs no scene-tree parenting.
 ##############################
 
@@ -85,7 +85,7 @@ fun gun_node_create(mesh_id: i32) -> GunNode:
     node.pitch_bias = 0.0
     node.roll_bias = 0.0
     return node
-
+    
 # Upload the gun model and register one instance, returning a GunNode.
 fun spawn_gun(path: str) -> GunNode:
     gun_vb: i32 = Engine.upload_model_or_cube(path)
