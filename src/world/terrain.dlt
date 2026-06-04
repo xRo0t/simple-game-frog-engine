@@ -31,19 +31,55 @@ fun terrain_is_solid_block(block_id: i32) -> i32:
     return 1
 
 fun terrain_configure_palette(chunk: VoxelChunk):
+    grass_top_bright: i32 = 0
+    grass_side_medium: i32 = 7
+    grass_side_dark: i32 = 13
+    dirt_bright: i32 = 2
+    dirt_medium: i32 = 8
+    dirt_dark: i32 = 14
+    stone_bright: i32 = 3
+    stone_medium: i32 = 9
+    stone_dark: i32 = 15
+    sand_bright: i32 = 4
+    sand_medium: i32 = 10
+    sand_dark: i32 = 16
+    water_bright: i32 = 5
+    water_medium: i32 = 11
+    water_dark: i32 = 17
+
     chunk.set_block_color(terrain_grass(), 1.0, 1.0, 1.0)
     chunk.set_block_color(terrain_dirt(), 1.0, 1.0, 1.0)
     chunk.set_block_color(terrain_stone(), 1.0, 1.0, 1.0)
     chunk.set_block_color(terrain_sand(), 1.0, 1.0, 1.0)
     chunk.set_block_color(terrain_water(), 1.0, 1.0, 1.0)
-    chunk.set_texture_atlas(3, 2, 40)
-    chunk.set_block_tile(terrain_grass(), 1)
-    chunk.set_block_face_tile(terrain_grass(), 2, 2)
-    chunk.set_block_face_tile(terrain_grass(), 3, 0)
-    chunk.set_block_tile(terrain_dirt(), 2)
-    chunk.set_block_tile(terrain_stone(), 3)
-    chunk.set_block_tile(terrain_sand(), 4)
-    chunk.set_block_tile(terrain_water(), 5)
+    chunk.set_texture_atlas(6, 3, 40)
+    chunk.set_block_tile(terrain_grass(), grass_side_medium)
+    chunk.set_block_face_tile(terrain_grass(), 0, grass_side_dark)
+    chunk.set_block_face_tile(terrain_grass(), 1, grass_side_dark)
+    chunk.set_block_face_tile(terrain_grass(), 2, dirt_dark)
+    chunk.set_block_face_tile(terrain_grass(), 3, grass_top_bright)
+    chunk.set_block_face_tile(terrain_grass(), 4, grass_side_medium)
+    chunk.set_block_face_tile(terrain_grass(), 5, grass_side_medium)
+    chunk.set_block_tile(terrain_dirt(), dirt_medium)
+    chunk.set_block_face_tile(terrain_dirt(), 0, dirt_dark)
+    chunk.set_block_face_tile(terrain_dirt(), 1, dirt_dark)
+    chunk.set_block_face_tile(terrain_dirt(), 2, dirt_dark)
+    chunk.set_block_face_tile(terrain_dirt(), 3, dirt_bright)
+    chunk.set_block_tile(terrain_stone(), stone_medium)
+    chunk.set_block_face_tile(terrain_stone(), 0, stone_dark)
+    chunk.set_block_face_tile(terrain_stone(), 1, stone_dark)
+    chunk.set_block_face_tile(terrain_stone(), 2, stone_dark)
+    chunk.set_block_face_tile(terrain_stone(), 3, stone_bright)
+    chunk.set_block_tile(terrain_sand(), sand_medium)
+    chunk.set_block_face_tile(terrain_sand(), 0, sand_dark)
+    chunk.set_block_face_tile(terrain_sand(), 1, sand_dark)
+    chunk.set_block_face_tile(terrain_sand(), 2, sand_dark)
+    chunk.set_block_face_tile(terrain_sand(), 3, sand_bright)
+    chunk.set_block_tile(terrain_water(), water_medium)
+    chunk.set_block_face_tile(terrain_water(), 0, water_dark)
+    chunk.set_block_face_tile(terrain_water(), 1, water_dark)
+    chunk.set_block_face_tile(terrain_water(), 2, water_dark)
+    chunk.set_block_face_tile(terrain_water(), 3, water_bright)
 
 fun terrain_height_at(wx: i32, wz: i32, seed: i32, max_height: i32) -> i32:
     idx: i32 = (wz + 4096) * 8192 + (wx + 4096)
