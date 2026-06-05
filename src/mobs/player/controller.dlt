@@ -36,23 +36,23 @@ fun snap_player_to_terrain(player: PlayerNode, terrain: TerrainWorld):
 fun update_player(player: PlayerNode, terrain: TerrainWorld, dt: f32):
     if Input.key_down(KEY_ESCAPE) == 1:
         if player.captured == 1:
-            Engine.release_mouse()
+            Engine.mouse.release()
             player.captured = 0
 
     if player.captured == 0:
         if Input.key_down(KEY_M) == 1:
-            Engine.capture_mouse()
+            Engine.mouse.capture()
             player.captured = 1
             player.look_ready = 0
 
     if player.captured == 1:
         if player.look_ready == 0:
-            Engine.mouse_delta_x()
-            Engine.mouse_delta_y()
+            Engine.mouse.delta_x()
+            Engine.mouse.delta_y()
             player.look_ready = 1
         else:
-            mdx: f32 = Engine.mouse_delta_x()
-            mdy: f32 = Engine.mouse_delta_y()
+            mdx: f32 = Engine.mouse.delta_x()
+            mdy: f32 = Engine.mouse.delta_y()
             player.yaw = normalize_angle_deg(player.yaw - mdx * player.look_sensitivity)
             player.pitch = clamp(player.pitch - mdy * player.look_sensitivity, 0.0 - 89.0, 89.0)
 

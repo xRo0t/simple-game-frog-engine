@@ -38,7 +38,7 @@ attach Engine:
         gun: GunNode = spawn_gun_textured("models/gun/scene.gltf", "models/gun/textures/1911_baseColor.png")
         bullets: BulletPool = spawn_bullet_pool("models/bullet.gltf", 64)
 
-        Engine.capture_mouse()
+        Engine.mouse.capture()
         print("OOP node tree scene ready")
 
         while Engine.running() == 1:
