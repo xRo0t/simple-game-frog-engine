@@ -47,18 +47,14 @@ fun update_player(player: PlayerNode, terrain: TerrainWorld, dt: f32):
 
     if player.captured == 1:
         if player.look_ready == 0:
-            Engine.center_mouse()
-            player.aim_x = Engine.mouse_x()
-            player.aim_y = Engine.mouse_y()
+            Engine.mouse_delta_x()
+            Engine.mouse_delta_y()
             player.look_ready = 1
         else:
-            mx: i32 = Engine.mouse_x()
-            my: i32 = Engine.mouse_y()
-            mdx: i32 = mx - player.aim_x
-            mdy: i32 = my - player.aim_y
-            player.yaw = normalize_angle_deg(player.yaw - (mdx as f32) * 0.07)
-            player.pitch = clamp(player.pitch - (mdy as f32) * 0.07, 0.0 - 89.0, 89.0)
-            Engine.center_mouse()
+            mdx: f32 = Engine.mouse_delta_x()
+            mdy: f32 = Engine.mouse_delta_y()
+            player.yaw = normalize_angle_deg(player.yaw - mdx * player.look_sensitivity)
+            player.pitch = clamp(player.pitch - mdy * player.look_sensitivity, 0.0 - 89.0, 89.0)
 
     if Input.key_down(KEY_LEFT) == 1:
         player.yaw = normalize_angle_deg(player.yaw + 50.0 * dt)

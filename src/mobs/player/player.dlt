@@ -24,10 +24,9 @@
     eye_height: f32 = 1.62
     walk_speed: f32 = 4.30
     sprint_speed: f32 = 5.60
+    look_sensitivity: f32 = 0.07
     captured: i32 = 1
     look_ready: i32 = 0
-    aim_x: i32 = 0
-    aim_y: i32 = 0
 
 attach PlayerNode:
 
@@ -50,10 +49,9 @@ fun player_node_create(px: f32, py: f32, pz: f32) -> PlayerNode:
     node.eye_height = 1.62
     node.walk_speed = 4.30
     node.sprint_speed = 5.60
+    node.look_sensitivity = 0.07
     node.captured = 1
     node.look_ready = 0
-    node.aim_x = 0
-    node.aim_y = 0
     return node
 
 fun spawn_player(x: f32, y: f32, z: f32) -> PlayerNode:
