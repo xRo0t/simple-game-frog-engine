@@ -1,10 +1,11 @@
 ##############################
 # Simple Game - Terrain
-# Game-specific chunked terrain content built on Frog's generic VoxelChunk.
+# Game-specific chunked terrain content built on the game's voxel chunk.
 ##############################
 
 import std
 import frog
+import world.voxel_chunk
 
 fun terrain_air() -> i32:
     return BlockId.air()
@@ -88,18 +89,32 @@ fun terrain_height_at(wx: i32, wz: i32, seed: i32, max_height: i32) -> i32:
     fz: f32 = wz as f32
     fs: f32 = seed as f32
 
-    plains: f32 = 5.0
-    plains = plains + @sin((fx + fs * 0.17) * 0.045) * 1.6
-    plains = plains + @cos((fz - fs * 0.11) * 0.038) * 1.4
-    plains = plains + @sin((fx + fz) * 0.018) * 1.1
-    plains = plains + rand_range(idx, seed, 23, -0.8, 0.8)
+    # Broad, low-frequency layers: wide readable plains instead of noisy ripples.
+    height: f32 = 5.0
+    height = height + @sin((fx + fs * 0.11) * 0.010) * 1.25
+    height = height + @cos((fz - fs * 0.07) * 0.012) * 1.10
+    height = height + @sin((fx * 0.006) + (fz * 0.005) + fs * 0.001) * 0.90
 
-    mountain_mask: f32 = @sin((fx + 180.0) * 0.031 + fs * 0.002) * @cos((fz - 90.0) * 0.027 + fs * 0.004)
-    if mountain_mask > 0.62:
-        plains = plains + (mountain_mask - 0.62) * 34.0
-        plains = plains + rand_range(idx, seed, 41, 0.0, 2.0)
+    hills: f32 = @sin((fx - fs * 0.19) * 0.022) * @cos((fz + fs * 0.13) * 0.019)
+    if hills > 0.18:
+        height = height + (hills - 0.18) * 7.0
 
-    h: i32 = plains as i32
+    ridge_a: f32 = @sin((fx + fs * 0.31) * 0.007)
+    ridge_b: f32 = @cos((fz - fs * 0.27) * 0.008)
+    mountain_mask: f32 = ridge_a * ridge_b
+    if mountain_mask > 0.36:
+        shoulder: f32 = mountain_mask - 0.36
+        height = height + shoulder * 24.0
+        if mountain_mask > 0.58:
+            height = height + (mountain_mask - 0.58) * 42.0
+
+    # Keep open plains calmer; only tiny texture-scale variation remains.
+    if mountain_mask < 0.18:
+        if hills < 0.12:
+            height = 5.0 + (height - 5.0) * 0.45
+    height = height + rand_range(idx, seed, 23, -0.20, 0.20)
+
+    h: i32 = height as i32
     if h < 2:
         h = 2
     if h > max_height - 1:
@@ -314,7 +329,7 @@ attach TerrainWorld:
     fun load_grass_texture(self):
         if self.grass_texture_id >= 0:
             return
-        spec: TextureSpec = TextureSpec.pixel()
+        spec: TextureSpec = TextureSpec.pixel_tiled()
         tex: Texture2D = Assets.textures.load("textures/terrain/terrain_atlas.png", spec)
         if tex.texture_id >= 0:
             self.grass_texture_id = tex.texture_id
