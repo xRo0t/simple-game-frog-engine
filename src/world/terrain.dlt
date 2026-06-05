@@ -3,6 +3,7 @@
 # Game-specific chunked terrain content built on Frog's generic VoxelChunk.
 ##############################
 
+import std
 import frog
 
 fun terrain_air() -> i32:
@@ -172,8 +173,13 @@ fun terrain_abs_f32(v: f32) -> f32:
     pending_xs: i64 = 0
     pending_zs: i64 = 0
     pending_flags: i64 = 0
+    pending_stages: i64 = 0
+    dirty_slots: i64 = 0
+    dirty_flags: i64 = 0
     chunk_count: i32 = 0
     grid_size: i32 = 0
+    pool_grid_size: i32 = 0
+    cache_margin: i32 = 2
     chunk_size: i32 = 0
     chunk_height: i32 = 0
     total_faces: i32 = 0
@@ -183,15 +189,28 @@ fun terrain_abs_f32(v: f32) -> f32:
     pending_count: i32 = 0
     pending_cursor: i32 = 0
     stream_budget: i32 = 1
+    dirty_count: i32 = 0
+    dirty_cursor: i32 = 0
+    dirty_budget: i32 = 1
     visibility_cursor: i32 = 0
     visibility_budget: i32 = 96
     occlusion_enabled: i32 = 1
     grass_texture_id: i32 = -1
+    stream_debug_enabled: i32 = 1
+    stream_debug_frames: i32 = 0
+    stream_debug_generates: i32 = 0
+    stream_debug_uploads: i32 = 0
+    stream_debug_dirty_uploads: i32 = 0
+    stream_debug_pending_peak: i32 = 0
+    stream_debug_accum_ms: f64 = 0.0
+    stream_debug_max_ms: f64 = 0.0
 
 attach TerrainWorld:
 
     static fun create(grid_size: i32, chunk_size: i32, chunk_height: i32) -> TerrainWorld:
-        count: i32 = grid_size * grid_size
+        cache_margin: i32 = 2
+        pool_grid_size: i32 = grid_size + cache_margin * 2
+        count: i32 = pool_grid_size * pool_grid_size
         chunks: i64 = Memory.malloc_zeroed((count as i64) * 8)
         chunk_world_xs: i64 = Memory.malloc_zeroed((count as i64) * 4)
         chunk_world_zs: i64 = Memory.malloc_zeroed((count as i64) * 4)
@@ -199,6 +218,9 @@ attach TerrainWorld:
         pending_xs: i64 = Memory.malloc_zeroed((count as i64) * 4)
         pending_zs: i64 = Memory.malloc_zeroed((count as i64) * 4)
         pending_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        pending_stages: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        dirty_slots: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        dirty_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
         world: TerrainWorld = TerrainWorld()
         world.chunks = chunks
         world.chunk_world_xs = chunk_world_xs
@@ -207,8 +229,13 @@ attach TerrainWorld:
         world.pending_xs = pending_xs
         world.pending_zs = pending_zs
         world.pending_flags = pending_flags
+        world.pending_stages = pending_stages
+        world.dirty_slots = dirty_slots
+        world.dirty_flags = dirty_flags
         world.chunk_count = count
         world.grid_size = grid_size
+        world.pool_grid_size = pool_grid_size
+        world.cache_margin = cache_margin
         world.chunk_size = chunk_size
         world.chunk_height = chunk_height
         world.total_faces = 0
@@ -218,10 +245,21 @@ attach TerrainWorld:
         world.pending_count = 0
         world.pending_cursor = 0
         world.stream_budget = 1
+        world.dirty_count = 0
+        world.dirty_cursor = 0
+        world.dirty_budget = 1
         world.visibility_cursor = 0
         world.visibility_budget = 96
         world.occlusion_enabled = 1
         world.grass_texture_id = -1
+        world.stream_debug_enabled = 1
+        world.stream_debug_frames = 0
+        world.stream_debug_generates = 0
+        world.stream_debug_uploads = 0
+        world.stream_debug_dirty_uploads = 0
+        world.stream_debug_pending_peak = 0
+        world.stream_debug_accum_ms = 0.0
+        world.stream_debug_max_ms = 0.0
         return world
 
     fun destroy(self):
@@ -253,6 +291,15 @@ attach TerrainWorld:
         if self.pending_flags != 0:
             Memory.free(self.pending_flags)
             self.pending_flags = 0
+        if self.pending_stages != 0:
+            Memory.free(self.pending_stages)
+            self.pending_stages = 0
+        if self.dirty_slots != 0:
+            Memory.free(self.dirty_slots)
+            self.dirty_slots = 0
+        if self.dirty_flags != 0:
+            Memory.free(self.dirty_flags)
+            self.dirty_flags = 0
         Memory.free(self as i64)
 
     fun set_chunk(self, index: i32, chunk: VoxelChunk):
@@ -411,6 +458,23 @@ attach TerrainWorld:
             return 0
         return 1
 
+    fun coord_is_cached(self, chunk_x: i32, chunk_z: i32) -> i32:
+        half_grid: i32 = self.grid_size / 2
+        cache_half: i32 = half_grid + self.cache_margin
+        min_x: i32 = self.center_chunk_x - cache_half
+        max_x: i32 = self.center_chunk_x + cache_half
+        min_z: i32 = self.center_chunk_z - cache_half
+        max_z: i32 = self.center_chunk_z + cache_half
+        if chunk_x < min_x:
+            return 0
+        if chunk_x > max_x:
+            return 0
+        if chunk_z < min_z:
+            return 0
+        if chunk_z > max_z:
+            return 0
+        return 1
+
     fun find_chunk_coord(self, chunk_x: i32, chunk_z: i32) -> i32:
         if self.chunks == 0:
             return 0 - 1
@@ -432,24 +496,44 @@ attach TerrainWorld:
         i: i32 = 0
         while i < self.chunk_count:
             Memory.write_i32(self.pending_flags + i * 4, 0)
+            if self.pending_stages != 0:
+                Memory.write_i32(self.pending_stages + i * 4, 0)
             i = i + 1
         self.pending_count = 0
         self.pending_cursor = 0
 
+    fun clear_dirty(self):
+        if self.dirty_flags == 0:
+            return
+        i: i32 = 0
+        while i < self.chunk_count:
+            Memory.write_i32(self.dirty_flags + i * 4, 0)
+            i = i + 1
+        self.dirty_count = 0
+        self.dirty_cursor = 0
+
     fun find_reusable_slot(self) -> i32:
         i: i32 = 0
         while i < self.chunk_count:
-            if Memory.read_i32(self.pending_flags + i * 4) == 0:
+            busy: i32 = Memory.read_i32(self.pending_flags + i * 4)
+            if self.dirty_flags != 0:
+                if Memory.read_i32(self.dirty_flags + i * 4) != 0:
+                    busy = 1
+            if busy == 0:
                 ptr: i64 = Memory.read_ptr(self.chunks + ((i as i64) * 8))
                 if ptr == 0:
                     return i
             i = i + 1
         i = 0
         while i < self.chunk_count:
-            if Memory.read_i32(self.pending_flags + i * 4) == 0:
+            busy2: i32 = Memory.read_i32(self.pending_flags + i * 4)
+            if self.dirty_flags != 0:
+                if Memory.read_i32(self.dirty_flags + i * 4) != 0:
+                    busy2 = 1
+            if busy2 == 0:
                 sx: i32 = Memory.read_i32(self.chunk_world_xs + i * 4)
                 sz: i32 = Memory.read_i32(self.chunk_world_zs + i * 4)
-                if self.coord_is_visible(sx, sz) == 0:
+                if self.coord_is_cached(sx, sz) == 0:
                     return i
             i = i + 1
         return 0 - 1
@@ -468,10 +552,38 @@ attach TerrainWorld:
         Memory.write_i32(self.pending_xs + idx * 4, chunk_x)
         Memory.write_i32(self.pending_zs + idx * 4, chunk_z)
         Memory.write_i32(self.pending_flags + slot * 4, 1)
+        if self.pending_stages != 0:
+            Memory.write_i32(self.pending_stages + idx * 4, 0)
         self.pending_count = idx + 1
+        if self.pending_count > self.stream_debug_pending_peak:
+            self.stream_debug_pending_peak = self.pending_count
+
+    fun mark_dirty_slot(self, slot: i32):
+        if slot < 0:
+            return
+        if slot >= self.chunk_count:
+            return
+        if self.dirty_slots == 0:
+            return
+        if self.dirty_flags == 0:
+            return
+        if self.dirty_count >= self.chunk_count:
+            return
+        if Memory.read_i32(self.dirty_flags + slot * 4) != 0:
+            return
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr == 0:
+            return
+        Memory.write_i32(self.dirty_slots + self.dirty_count * 4, slot)
+        Memory.write_i32(self.dirty_flags + slot * 4, 1)
+        self.dirty_count = self.dirty_count + 1
+
+    fun mark_dirty_chunk_at(self, chunk_x: i32, chunk_z: i32):
+        self.mark_dirty_slot(self.find_chunk_coord(chunk_x, chunk_z))
 
     fun schedule_missing_chunks(self):
-        self.clear_pending()
+        if self.pending_count == 0:
+            self.clear_pending()
         half_grid: i32 = self.grid_size / 2
         gz: i32 = 0
         while gz < self.grid_size:
@@ -487,15 +599,28 @@ attach TerrainWorld:
             gz = gz + 1
 
     fun build_slot_target(self, slot: i32, chunk_x: i32, chunk_z: i32) -> i32:
+        self.prepare_slot_target(slot, chunk_x, chunk_z)
+        self.relink_slot_target(chunk_x, chunk_z)
+        return self.upload_slot_mesh(slot)
+
+    fun prepare_slot_target(self, slot: i32, chunk_x: i32, chunk_z: i32) -> i32:
+        old_ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if old_ptr != 0:
+            old_chunk: VoxelChunk = old_ptr as VoxelChunk
+            if old_chunk.mesh_id >= 0:
+                Engine.set_instance_visible(old_chunk.mesh_id, 0)
         self.ensure_slot_target(slot, chunk_x, chunk_z)
-        self.generate_slot_blocks(slot)
+        if self.generate_slot_blocks(slot) == 0:
+            return 0
+        self.stream_debug_generates = self.stream_debug_generates + 1
+        return 1
+
+    fun relink_slot_target(self, chunk_x: i32, chunk_z: i32):
         self.relink_neighbors_around(chunk_x, chunk_z)
-        faces: i32 = self.upload_slot_mesh(slot)
-        faces = faces + self.refresh_chunk_mesh_at(chunk_x - 1, chunk_z)
-        faces = faces + self.refresh_chunk_mesh_at(chunk_x + 1, chunk_z)
-        faces = faces + self.refresh_chunk_mesh_at(chunk_x, chunk_z - 1)
-        faces = faces + self.refresh_chunk_mesh_at(chunk_x, chunk_z + 1)
-        return faces
+        self.mark_dirty_chunk_at(chunk_x - 1, chunk_z)
+        self.mark_dirty_chunk_at(chunk_x + 1, chunk_z)
+        self.mark_dirty_chunk_at(chunk_x, chunk_z - 1)
+        self.mark_dirty_chunk_at(chunk_x, chunk_z + 1)
 
     fun generate_slot_blocks(self, slot: i32) -> i32:
         ptr: i64 = self.chunk_ptr_for_slot(slot)
@@ -534,26 +659,99 @@ attach TerrainWorld:
             Engine.bind_texture(mesh_id, self.grass_texture_id)
         return faces
 
-    fun process_streaming(self) -> i32:
-        if self.pending_cursor >= self.pending_count:
+    fun report_stream_debug(self, elapsed_ms: f64):
+        if self.stream_debug_enabled == 0:
+            return
+        self.stream_debug_frames = self.stream_debug_frames + 1
+        self.stream_debug_accum_ms = self.stream_debug_accum_ms + elapsed_ms
+        if elapsed_ms > self.stream_debug_max_ms:
+            self.stream_debug_max_ms = elapsed_ms
+        if self.stream_debug_frames >= 180:
+            avg_ms: f64 = self.stream_debug_accum_ms / (self.stream_debug_frames as f64)
+            msg: str = "[terrain.stream] frames=" + Convert.i32_to_str(self.stream_debug_frames)
+            msg = msg + " pendingPeak=" + Convert.i32_to_str(self.stream_debug_pending_peak)
+            msg = msg + " gen=" + Convert.i32_to_str(self.stream_debug_generates)
+            msg = msg + " upload=" + Convert.i32_to_str(self.stream_debug_uploads)
+            msg = msg + " dirtyUpload=" + Convert.i32_to_str(self.stream_debug_dirty_uploads)
+            msg = msg + " avgMs=" + Convert.f64_to_str(avg_ms)
+            msg = msg + " maxMs=" + Convert.f64_to_str(self.stream_debug_max_ms)
+            print(msg)
+            self.stream_debug_frames = 0
+            self.stream_debug_generates = 0
+            self.stream_debug_uploads = 0
+            self.stream_debug_dirty_uploads = 0
+            self.stream_debug_pending_peak = self.pending_count
+            self.stream_debug_accum_ms = 0.0
+            self.stream_debug_max_ms = 0.0
+
+    fun process_dirty_meshes(self) -> i32:
+        if self.dirty_cursor >= self.dirty_count:
+            self.dirty_count = 0
+            self.dirty_cursor = 0
             return 0
         faces_total: i32 = 0
         processed: i32 = 0
-        while processed < self.stream_budget:
-            if self.pending_cursor >= self.pending_count:
-                processed = self.stream_budget
+        while processed < self.dirty_budget:
+            if self.dirty_cursor >= self.dirty_count:
+                processed = self.dirty_budget
             else:
-                idx: i32 = self.pending_cursor
-                slot: i32 = Memory.read_i32(self.pending_slots + idx * 4)
-                chunk_x: i32 = Memory.read_i32(self.pending_xs + idx * 4)
-                chunk_z: i32 = Memory.read_i32(self.pending_zs + idx * 4)
-                faces_total = faces_total + self.build_slot_target(slot, chunk_x, chunk_z)
-                Memory.write_i32(self.pending_flags + slot * 4, 0)
-                self.pending_cursor = self.pending_cursor + 1
+                idx: i32 = self.dirty_cursor
+                slot: i32 = Memory.read_i32(self.dirty_slots + idx * 4)
+                faces_total = faces_total + self.upload_slot_mesh(slot)
+                if self.dirty_flags != 0:
+                    Memory.write_i32(self.dirty_flags + slot * 4, 0)
+                self.stream_debug_dirty_uploads = self.stream_debug_dirty_uploads + 1
+                self.dirty_cursor = self.dirty_cursor + 1
                 processed = processed + 1
+        if self.dirty_cursor >= self.dirty_count:
+            self.dirty_count = 0
+            self.dirty_cursor = 0
+        return faces_total
+
+    fun process_pending_stage(self) -> i32:
         if self.pending_cursor >= self.pending_count:
             self.pending_count = 0
             self.pending_cursor = 0
+            return 0
+        idx: i32 = self.pending_cursor
+        slot: i32 = Memory.read_i32(self.pending_slots + idx * 4)
+        chunk_x: i32 = Memory.read_i32(self.pending_xs + idx * 4)
+        chunk_z: i32 = Memory.read_i32(self.pending_zs + idx * 4)
+        stage: i32 = 0
+        if self.pending_stages != 0:
+            stage = Memory.read_i32(self.pending_stages + idx * 4)
+
+        if stage == 0:
+            self.prepare_slot_target(slot, chunk_x, chunk_z)
+            if self.pending_stages != 0:
+                Memory.write_i32(self.pending_stages + idx * 4, 1)
+            return 0
+        if stage == 1:
+            self.relink_slot_target(chunk_x, chunk_z)
+            if self.pending_stages != 0:
+                Memory.write_i32(self.pending_stages + idx * 4, 2)
+            return 0
+
+        faces: i32 = self.upload_slot_mesh(slot)
+        self.stream_debug_uploads = self.stream_debug_uploads + 1
+        Memory.write_i32(self.pending_flags + slot * 4, 0)
+        if self.pending_stages != 0:
+            Memory.write_i32(self.pending_stages + idx * 4, 0)
+        self.pending_cursor = self.pending_cursor + 1
+        if self.pending_cursor >= self.pending_count:
+            self.pending_count = 0
+            self.pending_cursor = 0
+        return faces
+
+    fun process_streaming(self) -> i32:
+        start_time: f64 = engine_time_seconds()
+        faces_total: i32 = 0
+        if self.pending_cursor < self.pending_count:
+            faces_total = self.process_pending_stage()
+        else:
+            faces_total = self.process_dirty_meshes()
+        elapsed_ms: f64 = (engine_time_seconds() - start_time) * 1000.0
+        self.report_stream_debug(elapsed_ms)
         return faces_total
 
     fun chunk_in_view_cone(self, cam_x: f32, cam_z: f32, fwd_x: f32, fwd_z: f32, center_x: f32, center_z: f32) -> i32:
@@ -694,6 +892,14 @@ attach TerrainWorld:
         self.center_chunk_x = 0
         self.center_chunk_z = 0
         self.clear_pending()
+        self.clear_dirty()
+        self.stream_debug_frames = 0
+        self.stream_debug_generates = 0
+        self.stream_debug_uploads = 0
+        self.stream_debug_dirty_uploads = 0
+        self.stream_debug_pending_peak = 0
+        self.stream_debug_accum_ms = 0.0
+        self.stream_debug_max_ms = 0.0
         self.load_grass_texture()
         return self.rebuild_visible_chunks()
 
