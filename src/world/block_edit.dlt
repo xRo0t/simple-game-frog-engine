@@ -1,0 +1,167 @@
+##############################
+# Simple Game - Block Editing
+# Game-specific voxel interaction: raycast, break, and place blocks.
+##############################
+
+import frog
+import world.terrain
+
+struct BlockHit:
+    found: i32 = 0
+    block_x: i32 = 0
+    block_y: i32 = 0
+    block_z: i32 = 0
+    place_x: i32 = 0
+    place_y: i32 = 0
+    place_z: i32 = 0
+
+fun block_edit_player_overlaps_block(player_x: f32, player_y: f32, player_z: f32, radius: f32, height: f32, eye_height: f32, block_x: i32, block_y: i32, block_z: i32) -> i32:
+    min_x: f32 = player_x - radius
+    max_x: f32 = player_x + radius
+    min_y: f32 = player_y - eye_height
+    max_y: f32 = min_y + height
+    min_z: f32 = player_z - radius
+    max_z: f32 = player_z + radius
+
+    bx0: f32 = block_x as f32
+    by0: f32 = block_y as f32
+    bz0: f32 = block_z as f32
+    bx1: f32 = bx0 + 1.0
+    by1: f32 = by0 + 1.0
+    bz1: f32 = bz0 + 1.0
+
+    if max_x <= bx0:
+        return 0
+    if min_x >= bx1:
+        return 0
+    if max_y <= by0:
+        return 0
+    if min_y >= by1:
+        return 0
+    if max_z <= bz0:
+        return 0
+    if min_z >= bz1:
+        return 0
+    return 1
+
+attach TerrainWorld:
+
+    fun set_block_world(self, block_x: i32, block_y: i32, block_z: i32, block_id: i32) -> i32:
+        if block_y < 0:
+            return 0
+        if block_y >= self.chunk_height:
+            return 0
+
+        chunk_x: i32 = terrain_chunk_coord_from_block(block_x, self.chunk_size)
+        chunk_z: i32 = terrain_chunk_coord_from_block(block_z, self.chunk_size)
+        slot: i32 = self.find_chunk_coord(chunk_x, chunk_z)
+        if slot < 0:
+            return 0
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr == 0:
+            return 0
+
+        local_x: i32 = block_x - chunk_x * self.chunk_size
+        local_z: i32 = block_z - chunk_z * self.chunk_size
+        if local_x < 0:
+            return 0
+        if local_x >= self.chunk_size:
+            return 0
+        if local_z < 0:
+            return 0
+        if local_z >= self.chunk_size:
+            return 0
+
+        chunk: VoxelChunk = ptr as VoxelChunk
+        old_id: i32 = chunk.get(local_x, block_y, local_z)
+        if old_id == block_id:
+            return 0
+
+        chunk.set(local_x, block_y, local_z, block_id)
+        self.mark_dirty_slot(slot)
+        if local_x == 0:
+            self.mark_dirty_chunk_at(chunk_x - 1, chunk_z)
+        if local_x == self.chunk_size - 1:
+            self.mark_dirty_chunk_at(chunk_x + 1, chunk_z)
+        if local_z == 0:
+            self.mark_dirty_chunk_at(chunk_x, chunk_z - 1)
+        if local_z == self.chunk_size - 1:
+            self.mark_dirty_chunk_at(chunk_x, chunk_z + 1)
+        return 1
+
+    fun raycast_blocks(self, origin_x: f32, origin_y: f32, origin_z: f32, dir_x: f32, dir_y: f32, dir_z: f32, max_dist: f32) -> BlockHit:
+        hit: BlockHit = BlockHit()
+        step_dist: f32 = 0.05
+        t: f32 = 0.0
+        last_empty: i32 = 0
+        last_x: i32 = terrain_floor_coord(origin_x)
+        last_y: i32 = terrain_floor_coord(origin_y)
+        last_z: i32 = terrain_floor_coord(origin_z)
+
+        while t <= max_dist:
+            sx: f32 = origin_x + dir_x * t
+            sy: f32 = origin_y + dir_y * t
+            sz: f32 = origin_z + dir_z * t
+            bx: i32 = terrain_floor_coord(sx)
+            by: i32 = terrain_floor_coord(sy)
+            bz: i32 = terrain_floor_coord(sz)
+
+            if self.is_solid_world(bx, by, bz) == 1:
+                hit.found = 1
+                hit.block_x = bx
+                hit.block_y = by
+                hit.block_z = bz
+                if last_empty == 1:
+                    hit.place_x = last_x
+                    hit.place_y = last_y
+                    hit.place_z = last_z
+                else:
+                    hit.place_x = bx
+                    hit.place_y = by
+                    hit.place_z = bz
+                return hit
+
+            last_empty = 1
+            last_x = bx
+            last_y = by
+            last_z = bz
+            t = t + step_dist
+        return hit
+
+    fun update_block_edit(self, player_x: f32, player_y: f32, player_z: f32, yaw: f32, pitch: f32, radius: f32, height: f32, eye_height: f32):
+        left_now: i32 = Input.key_down(MOUSE_LEFT)
+        right_now: i32 = Input.key_down(MOUSE_RIGHT)
+        do_break: i32 = 0
+        do_place: i32 = 0
+
+        if left_now == 1:
+            if self.edit_left_down == 0:
+                do_break = 1
+        if right_now == 1:
+            if self.edit_right_down == 0:
+                do_place = 1
+        self.edit_left_down = left_now
+        self.edit_right_down = right_now
+
+        if do_break == 0:
+            if do_place == 0:
+                return
+
+        yr: f32 = deg2rad(yaw)
+        pr: f32 = deg2rad(pitch)
+        cp: f32 = @cos(pr)
+        dir_x: f32 = (0.0 - @sin(yr)) * cp
+        dir_y: f32 = @sin(pr)
+        dir_z: f32 = (0.0 - @cos(yr)) * cp
+
+        hit: BlockHit = self.raycast_blocks(player_x, player_y, player_z, dir_x, dir_y, dir_z, 4.5)
+        if hit.found == 0:
+            return
+
+        if do_break == 1:
+            self.set_block_world(hit.block_x, hit.block_y, hit.block_z, terrain_air())
+            return
+
+        if do_place == 1:
+            if block_edit_player_overlaps_block(player_x, player_y, player_z, radius, height, eye_height, hit.place_x, hit.place_y, hit.place_z) == 0:
+                self.set_block_world(hit.place_x, hit.place_y, hit.place_z, terrain_grass())

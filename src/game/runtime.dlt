@@ -18,6 +18,7 @@ import mobs.gun.controller
 import mobs.bullet.bullet
 import world.earth
 import world.terrain
+import world.block_edit
 
 attach Engine:
 
@@ -47,6 +48,7 @@ attach Engine:
 
             # Drive the player from input, then propagate to children.
             update_player(player, terrain, dt)
+            terrain.update_block_edit(player.pos_x, player.pos_y, player.pos_z, player.yaw, player.pitch, player.radius, player.height, player.eye_height)
             earth.update_terrain(player.pos_x, player.pos_y, player.pos_z, player.yaw, player.pitch)
             sync_camera_to_player(camera, player)
             update_gun_pickup(gun, player)
