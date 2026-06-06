@@ -144,6 +144,7 @@ attach EarthNode:
             if index < 96:
                 goblin_set_phase(goblins, index, 1, index)
             goblin: GoblinNode = goblin_at(goblins, index)
+            goblin.snap_to_terrain(terrain)
             goblin.sync_goblin_mesh()
             index = index + 1
 

@@ -27,7 +27,7 @@ attach Engine:
             return
 
         earth: EarthNode = earth_node_create()
-        earth.goblin_count = 0
+        earth.goblin_count = 10000
         goblins: GoblinState = earth.spawn_world()
         terrain: TerrainWorld = earth.terrain_world_ptr as TerrainWorld
 
@@ -64,7 +64,7 @@ attach Engine:
             yaw_rad: f32 = deg2rad(player.yaw)
             cam_fwd_x: f32 = 0.0 - @sin(yaw_rad)
             cam_fwd_z: f32 = 0.0 - @cos(yaw_rad)
-            update_goblins(goblins, dt, player.pos_x, player.pos_z, cam_fwd_x, cam_fwd_z)
+            update_goblins(goblins, terrain, dt, player.pos_x, player.pos_z, cam_fwd_x, cam_fwd_z)
 
             Engine.render()
 

@@ -31,7 +31,7 @@ fun goblin_rebuild_group_centers(g: GoblinState):
 
 attach GoblinNode:
 
-    fun update_behavior(self, g: GoblinState, dt: f32, cam_x: f32, cam_z: f32, cam_fwd_x: f32, cam_fwd_z: f32):
+    fun update_behavior(self, g: GoblinState, terrain: TerrainWorld, dt: f32, cam_x: f32, cam_z: f32, cam_fwd_x: f32, cam_fwd_z: f32):
         members: i32 = 0
         desired_x: f32 = 0.0
         desired_z: f32 = 0.0
@@ -56,6 +56,7 @@ attach GoblinNode:
         free_roam_sq: f32 = free_roam * free_roam
         group_target_x: f32 = 0.0
         group_target_z: f32 = 0.0
+        moved: i32 = 0
 
         desired_x = 0.0
         desired_z = 0.0
@@ -136,6 +137,7 @@ attach GoblinNode:
             desired_len = @sqrt(desired_len_sq)
             self.pos_x = self.pos_x + desired_x / desired_len * move_speed * dt
             self.pos_z = self.pos_z + desired_z / desired_len * move_speed * dt
+            moved = 1
             target_yaw = goblin_yaw_from_dir(desired_x, desired_z)
             self.yaw = lerp_angle_deg(self.yaw, target_yaw, dt * 5.0)
 
@@ -146,14 +148,16 @@ attach GoblinNode:
             self.home_x = self.home_x + (self.pos_x - self.home_x) * dt * 0.08
             self.home_z = self.home_z + (self.pos_z - self.home_z) * dt * 0.08
 
+        if moved == 1:
+            self.snap_to_terrain(terrain)
         self.sync_goblin_mesh()
 
-fun update_goblins(g: GoblinState, dt: f32, cam_x: f32, cam_z: f32, cam_fwd_x: f32, cam_fwd_z: f32):
+fun update_goblins(g: GoblinState, terrain: TerrainWorld, dt: f32, cam_x: f32, cam_z: f32, cam_fwd_x: f32, cam_fwd_z: f32):
     index: i32 = 0
 
     goblin_rebuild_group_centers(g)
 
     while index < g.count:
         goblin: GoblinNode = goblin_at(g, index)
-        goblin.update_behavior(g, dt, cam_x, cam_z, cam_fwd_x, cam_fwd_z)
+        goblin.update_behavior(g, terrain, dt, cam_x, cam_z, cam_fwd_x, cam_fwd_z)
         index = index + 1

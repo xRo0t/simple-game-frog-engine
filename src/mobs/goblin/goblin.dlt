@@ -2,6 +2,8 @@
 # Simple Game - Goblin Nodes
 ##############################
 
+import world.terrain
+
 @heap struct GoblinGroupNode:
     id: i32 = -1
     name: str = ""
@@ -58,6 +60,8 @@
     group_id: i32 = -1
     role: i32 = 0
     social_timer: f32 = 0.0
+    ground_block_x: i32 = -999999
+    ground_block_z: i32 = -999999
 
 struct GoblinState:
     root_ptr: i64 = 0
@@ -86,6 +90,9 @@ fun goblin_rand_range(index: i32, phase_tick: i32, salt: i32, min: f32, max: f32
 
 fun goblin_yaw_from_dir(dir_x: f32, dir_z: f32) -> f32:
     return approx_atan2(0.0 - dir_x, 0.0 - dir_z) * 57.2957795
+
+fun goblin_ground_offset() -> f32:
+    return 0.64
 
 fun goblin_group_node_create(index: i32) -> GoblinGroupNode:
     node: GoblinGroupNode = GoblinGroupNode()
@@ -149,6 +156,8 @@ fun goblin_node_create(index: i32, mesh_id: i32, px: f32, pz: f32, group_id: i32
     node.group_id = group_id
     node.role = role
     node.social_timer = 0.0
+    node.ground_block_x = -999999
+    node.ground_block_z = -999999
     return node
 
 fun goblin_at(g: GoblinState, index: i32) -> GoblinNode:
@@ -226,7 +235,6 @@ attach GoblinNode:
         self.timer = duration
 
     fun sync_goblin_mesh(self):
-        self.pos_y = 0.64
         self.rot_x = 0.0
         self.rot_y = self.yaw + 180.0 #wsnthere
         self.rot_z = 0.0
@@ -244,6 +252,18 @@ attach GoblinNode:
             self.scale_y,
             self.scale_z
         )
+
+    fun snap_to_terrain(self, terrain: TerrainWorld):
+        bx: i32 = terrain_floor_coord(self.pos_x)
+        bz: i32 = terrain_floor_coord(self.pos_z)
+        if bx == self.ground_block_x:
+            if bz == self.ground_block_z:
+                return
+        self.ground_block_x = bx
+        self.ground_block_z = bz
+        h: i32 = terrain_height_at(bx, bz, terrain.seed, terrain.chunk_height - 1)
+        top: f32 = (h + 1) as f32
+        self.pos_y = top + goblin_ground_offset()
 
 fun goblin_set_phase(g: GoblinState, index: i32, phase: i32, phase_tick: i32):
     node: GoblinNode = goblin_at(g, index)
