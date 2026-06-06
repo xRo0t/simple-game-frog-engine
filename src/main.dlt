@@ -22,6 +22,11 @@ Engine.properties.set_gpu_preference(GpuPreference.index(1))
 
 Assets.mount("assets")
 scene: Scene = Scene.create()
+env: Environment = Environment.create()
+sky_color: Color = Color.rgb(0.64, 0.73, 0.88)
+env.set_clear_color(sky_color)
+env.set_fog(Fog.minecraft(sky_color, 480.0))
+scene.set_environment(env)
 
 player_actor: Node3D = Node3D.create("Player")
 player_model: Model3D = Assets.models.load("models/player/scene.gltf")
@@ -45,3 +50,4 @@ scene.add_child(ground)
 
 Engine.scene.set(scene)
 Engine.run()
+
