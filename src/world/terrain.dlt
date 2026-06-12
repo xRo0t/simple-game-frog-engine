@@ -191,6 +191,11 @@ fun terrain_abs_f32(v: f32) -> f32:
     pending_stages: i64 = 0
     dirty_slots: i64 = 0
     dirty_flags: i64 = 0
+    mesh_workspace_ptr: i64 = 0
+    mesh_job_slot: i32 = -1
+    mesh_job_face: i32 = 0
+    mesh_job_face_count: i32 = 0
+    mesh_job_source: i32 = 0
     chunk_count: i32 = 0
     grid_size: i32 = 0
     pool_grid_size: i32 = 0
@@ -211,7 +216,7 @@ fun terrain_abs_f32(v: f32) -> f32:
     visibility_budget: i32 = 96
     occlusion_enabled: i32 = 1
     grass_texture_id: i32 = -1
-    stream_debug_enabled: i32 = 1
+    stream_debug_enabled: i32 = 0
     stream_debug_frames: i32 = 0
     stream_debug_generates: i32 = 0
     stream_debug_uploads: i32 = 0
@@ -249,6 +254,12 @@ attach TerrainWorld:
         world.pending_stages = pending_stages
         world.dirty_slots = dirty_slots
         world.dirty_flags = dirty_flags
+        workspace: VoxelMeshWorkspace = VoxelMeshWorkspace.create()
+        world.mesh_workspace_ptr = workspace as i64
+        world.mesh_job_slot = -1
+        world.mesh_job_face = 0
+        world.mesh_job_face_count = 0
+        world.mesh_job_source = 0
         world.chunk_count = count
         world.grid_size = grid_size
         world.pool_grid_size = pool_grid_size
@@ -269,7 +280,7 @@ attach TerrainWorld:
         world.visibility_budget = 96
         world.occlusion_enabled = 1
         world.grass_texture_id = -1
-        world.stream_debug_enabled = 1
+        world.stream_debug_enabled = 0
         world.stream_debug_frames = 0
         world.stream_debug_generates = 0
         world.stream_debug_uploads = 0
@@ -319,6 +330,10 @@ attach TerrainWorld:
         if self.dirty_flags != 0:
             Memory.free(self.dirty_flags)
             self.dirty_flags = 0
+        if self.mesh_workspace_ptr != 0:
+            workspace: VoxelMeshWorkspace = self.mesh_workspace_ptr as VoxelMeshWorkspace
+            workspace.destroy()
+            self.mesh_workspace_ptr = 0
         Memory.free(self as i64)
 
     fun set_chunk(self, index: i32, chunk: VoxelChunk):
@@ -660,6 +675,83 @@ attach TerrainWorld:
             return 0
         return self.upload_slot_mesh(slot)
 
+    fun start_mesh_job(self, slot: i32, source: i32) -> i32:
+        if self.mesh_job_slot >= 0:
+            return 0
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr == 0:
+            return 0
+        if self.mesh_workspace_ptr == 0:
+            return 0
+        chunk: VoxelChunk = ptr as VoxelChunk
+        workspace: VoxelMeshWorkspace = self.mesh_workspace_ptr as VoxelMeshWorkspace
+        chunk_x: i32 = Memory.read_i32(self.chunk_world_xs + slot * 4)
+        chunk_z: i32 = Memory.read_i32(self.chunk_world_zs + slot * 4)
+        origin_x: i32 = chunk_x * self.chunk_size
+        origin_z: i32 = chunk_z * self.chunk_size
+        chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
+        begin_result: i32 = chunk.begin_mesh_into(workspace)
+        if begin_result < 0:
+            return 0
+        self.mesh_job_slot = slot
+        self.mesh_job_face = 0
+        self.mesh_job_face_count = 0
+        self.mesh_job_source = source
+        if begin_result == 0:
+            self.mesh_job_face = 6
+        return 1
+
+    fun finish_mesh_job_queue(self, slot: i32):
+        if self.mesh_job_source == 1:
+            if self.pending_flags != 0:
+                Memory.write_i32(self.pending_flags + slot * 4, 0)
+            if self.pending_stages != 0:
+                Memory.write_i32(self.pending_stages + self.pending_cursor * 4, 0)
+            self.pending_cursor = self.pending_cursor + 1
+            if self.pending_cursor >= self.pending_count:
+                self.pending_count = 0
+                self.pending_cursor = 0
+            self.stream_debug_uploads = self.stream_debug_uploads + 1
+        elif self.mesh_job_source == 2:
+            if self.dirty_flags != 0:
+                Memory.write_i32(self.dirty_flags + slot * 4, 0)
+            self.dirty_cursor = self.dirty_cursor + 1
+            if self.dirty_cursor >= self.dirty_count:
+                self.dirty_count = 0
+                self.dirty_cursor = 0
+            self.stream_debug_dirty_uploads = self.stream_debug_dirty_uploads + 1
+
+    fun process_mesh_job(self) -> i32:
+        if self.mesh_job_slot < 0:
+            return 0
+        ptr: i64 = self.chunk_ptr_for_slot(self.mesh_job_slot)
+        if ptr == 0:
+            self.finish_mesh_job_queue(self.mesh_job_slot)
+            self.mesh_job_slot = -1
+            self.mesh_job_source = 0
+            return 0
+        if self.mesh_workspace_ptr == 0:
+            return 0
+        chunk: VoxelChunk = ptr as VoxelChunk
+        workspace: VoxelMeshWorkspace = self.mesh_workspace_ptr as VoxelMeshWorkspace
+        if self.mesh_job_face < 6:
+            self.mesh_job_face_count = chunk.build_mesh_face_into(workspace, self.mesh_job_face, self.mesh_job_face_count)
+            self.mesh_job_face = self.mesh_job_face + 1
+            return 0
+
+        mesh_id: i32 = chunk.upload_workspace_mesh(workspace, self.mesh_job_face_count)
+        if mesh_id >= 0:
+            if self.grass_texture_id >= 0:
+                Engine.bind_texture(mesh_id, self.grass_texture_id)
+        faces: i32 = chunk.last_face_count
+        slot: i32 = self.mesh_job_slot
+        self.finish_mesh_job_queue(slot)
+        self.mesh_job_slot = -1
+        self.mesh_job_face = 0
+        self.mesh_job_face_count = 0
+        self.mesh_job_source = 0
+        return faces
+
     fun upload_slot_mesh(self, slot: i32) -> i32:
         ptr: i64 = self.chunk_ptr_for_slot(slot)
         if ptr == 0:
@@ -670,13 +762,15 @@ attach TerrainWorld:
         origin_x: i32 = chunk_x * self.chunk_size
         origin_z: i32 = chunk_z * self.chunk_size
         chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
-        faces: i32 = chunk.visible_face_count()
-        mesh_id: i32 = chunk.upload()
+        if self.mesh_workspace_ptr == 0:
+            return 0
+        workspace: VoxelMeshWorkspace = self.mesh_workspace_ptr as VoxelMeshWorkspace
+        mesh_id: i32 = chunk.upload_with_workspace(workspace)
         if mesh_id < 0:
             return 0
         if self.grass_texture_id >= 0:
             Engine.bind_texture(mesh_id, self.grass_texture_id)
-        return faces
+        return chunk.last_face_count
 
     fun report_stream_debug(self, elapsed_ms: f64):
         if self.stream_debug_enabled == 0:
@@ -708,24 +802,9 @@ attach TerrainWorld:
             self.dirty_count = 0
             self.dirty_cursor = 0
             return 0
-        faces_total: i32 = 0
-        processed: i32 = 0
-        while processed < self.dirty_budget:
-            if self.dirty_cursor >= self.dirty_count:
-                processed = self.dirty_budget
-            else:
-                idx: i32 = self.dirty_cursor
-                slot: i32 = Memory.read_i32(self.dirty_slots + idx * 4)
-                faces_total = faces_total + self.upload_slot_mesh(slot)
-                if self.dirty_flags != 0:
-                    Memory.write_i32(self.dirty_flags + slot * 4, 0)
-                self.stream_debug_dirty_uploads = self.stream_debug_dirty_uploads + 1
-                self.dirty_cursor = self.dirty_cursor + 1
-                processed = processed + 1
-        if self.dirty_cursor >= self.dirty_count:
-            self.dirty_count = 0
-            self.dirty_cursor = 0
-        return faces_total
+        slot: i32 = Memory.read_i32(self.dirty_slots + self.dirty_cursor * 4)
+        self.start_mesh_job(slot, 2)
+        return 0
 
     fun process_pending_stage(self) -> i32:
         if self.pending_cursor >= self.pending_count:
@@ -751,21 +830,15 @@ attach TerrainWorld:
                 Memory.write_i32(self.pending_stages + idx * 4, 2)
             return 0
 
-        faces: i32 = self.upload_slot_mesh(slot)
-        self.stream_debug_uploads = self.stream_debug_uploads + 1
-        Memory.write_i32(self.pending_flags + slot * 4, 0)
-        if self.pending_stages != 0:
-            Memory.write_i32(self.pending_stages + idx * 4, 0)
-        self.pending_cursor = self.pending_cursor + 1
-        if self.pending_cursor >= self.pending_count:
-            self.pending_count = 0
-            self.pending_cursor = 0
-        return faces
+        self.start_mesh_job(slot, 1)
+        return 0
 
     fun process_streaming(self) -> i32:
         start_time: f64 = engine_time_seconds()
         faces_total: i32 = 0
-        if self.pending_cursor < self.pending_count:
+        if self.mesh_job_slot >= 0:
+            faces_total = self.process_mesh_job()
+        elif self.pending_cursor < self.pending_count:
             faces_total = self.process_pending_stage()
         else:
             faces_total = self.process_dirty_meshes()

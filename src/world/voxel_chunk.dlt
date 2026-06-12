@@ -13,6 +13,80 @@ attach BlockId:
     static fun air() -> i32:
         return 0
 
+@heap struct VoxelMeshWorkspace:
+    vertices: i64 = 0
+    indices: i64 = 0
+    mask: i64 = 0
+    face_capacity: i32 = 0
+    mask_capacity: i32 = 0
+
+attach VoxelMeshWorkspace:
+
+    static fun create() -> VoxelMeshWorkspace:
+        return VoxelMeshWorkspace()
+
+    fun ensure_faces(self, needed: i32) -> i32:
+        if needed <= 0:
+            return 0
+        if self.face_capacity >= needed:
+            if self.vertices != 0:
+                if self.indices != 0:
+                    return 1
+        next_capacity: i32 = self.face_capacity
+        if next_capacity < 1024:
+            next_capacity = 1024
+        while next_capacity < needed:
+            next_capacity = next_capacity * 2
+        next_vertices: i64 = Memory.malloc_zeroed((next_capacity as i64) * 4 * 32)
+        if next_vertices == 0:
+            return 0
+        next_indices: i64 = Memory.malloc_zeroed((next_capacity as i64) * 6 * 4)
+        if next_indices == 0:
+            Memory.free(next_vertices)
+            return 0
+        if self.vertices != 0:
+            Memory.free(self.vertices)
+        if self.indices != 0:
+            Memory.free(self.indices)
+        self.vertices = next_vertices
+        self.indices = next_indices
+        self.face_capacity = next_capacity
+        return 1
+
+    fun ensure_mask(self, needed: i32) -> i32:
+        if needed <= 0:
+            return 0
+        if self.mask_capacity >= needed:
+            if self.mask != 0:
+                return 1
+        next_capacity: i32 = self.mask_capacity
+        if next_capacity < 1024:
+            next_capacity = 1024
+        while next_capacity < needed:
+            next_capacity = next_capacity * 2
+        next_mask: i64 = Memory.malloc_zeroed((next_capacity as i64) * 4)
+        if next_mask == 0:
+            return 0
+        if self.mask != 0:
+            Memory.free(self.mask)
+        self.mask = next_mask
+        self.mask_capacity = next_capacity
+        return 1
+
+    fun destroy(self):
+        if self.vertices != 0:
+            Memory.free(self.vertices)
+            self.vertices = 0
+        if self.indices != 0:
+            Memory.free(self.indices)
+            self.indices = 0
+        if self.mask != 0:
+            Memory.free(self.mask)
+            self.mask = 0
+        self.face_capacity = 0
+        self.mask_capacity = 0
+        Memory.free(self as i64)
+
 @heap struct VoxelChunk:
     size_x: i32 = 0
     size_y: i32 = 0
@@ -20,6 +94,7 @@ attach BlockId:
     blocks: i64 = 0
     palette: i64 = 0
     mesh_id: i32 = -1
+    last_face_count: i32 = 0
     pos_x: f32 = 0.0
     pos_y: f32 = 0.0
     pos_z: f32 = 0.0
@@ -440,7 +515,14 @@ fun voxel_greedy_can_grow(chunk: VoxelChunk, used: i64, face: i32, slice: i32, u
         uu = uu + 1
     return 1
 
-fun voxel_write_greedy_face(chunk: VoxelChunk, vertices: i64, indices: i64, start_face_index: i32, face: i32) -> i32:
+fun voxel_greedy_face_mask_size(chunk: VoxelChunk, face: i32) -> i32:
+    if face == 0 or face == 1:
+        return chunk.size_y * chunk.size_z
+    if face == 4 or face == 5:
+        return chunk.size_x * chunk.size_y
+    return chunk.size_x * chunk.size_z
+
+fun voxel_write_greedy_face_with_mask(chunk: VoxelChunk, vertices: i64, indices: i64, start_face_index: i32, face: i32, used: i64) -> i32:
     face_index: i32 = start_face_index
     u_count: i32 = chunk.size_x
     v_count: i32 = chunk.size_z
@@ -463,7 +545,6 @@ fun voxel_write_greedy_face(chunk: VoxelChunk, vertices: i64, indices: i64, star
         slice_count = chunk.size_z
 
     used_size: i32 = u_count * v_count
-    used: i64 = Memory.malloc_zeroed((used_size as i64) * 4)
     if used == 0:
         return face_index
 
@@ -508,6 +589,14 @@ fun voxel_write_greedy_face(chunk: VoxelChunk, vertices: i64, indices: i64, star
             v = v + 1
         slice = slice + 1
 
+    return face_index
+
+fun voxel_write_greedy_face(chunk: VoxelChunk, vertices: i64, indices: i64, start_face_index: i32, face: i32) -> i32:
+    used_size: i32 = voxel_greedy_face_mask_size(chunk, face)
+    used: i64 = Memory.malloc_zeroed((used_size as i64) * 4)
+    if used == 0:
+        return start_face_index
+    face_index: i32 = voxel_write_greedy_face_with_mask(chunk, vertices, indices, start_face_index, face, used)
     Memory.free(used)
     return face_index
 
@@ -531,6 +620,7 @@ attach VoxelChunk:
         chunk.blocks = data
         chunk.palette = palette_data
         chunk.mesh_id = -1
+        chunk.last_face_count = 0
         chunk.pos_x = 0.0
         chunk.pos_y = 0.0
         chunk.pos_z = 0.0
@@ -785,6 +875,7 @@ attach VoxelChunk:
     fun build_mesh(self) -> GpuMeshData:
         max_faces: i32 = self.visible_face_count()
         if max_faces <= 0:
+            self.last_face_count = 0
             return GpuMeshData()
         max_vertex_count: i32 = max_faces * 4
         max_index_count: i32 = max_faces * 6
@@ -805,14 +896,86 @@ attach VoxelChunk:
         face_index = voxel_write_greedy_face(self, vertices, indices, face_index, 5)
 
         if face_index <= 0:
+            self.last_face_count = 0
             Memory.free(vertices)
             Memory.free(indices)
             return GpuMeshData()
 
+        self.last_face_count = face_index
         return GpuMeshData(vertices=vertices, vertex_count=face_index * 4, indices=indices, index_count=face_index * 6)
 
-    fun upload(self) -> i32:
-        mesh: GpuMeshData = self.build_mesh()
+    fun build_mesh_into(self, workspace: VoxelMeshWorkspace) -> GpuMeshData:
+        max_faces: i32 = self.visible_face_count()
+        if max_faces <= 0:
+            self.last_face_count = 0
+            return GpuMeshData()
+        if workspace.ensure_faces(max_faces) == 0:
+            self.last_face_count = 0
+            return GpuMeshData()
+        max_mask: i32 = self.size_x * self.size_z
+        yz_mask: i32 = self.size_y * self.size_z
+        xy_mask: i32 = self.size_x * self.size_y
+        if yz_mask > max_mask:
+            max_mask = yz_mask
+        if xy_mask > max_mask:
+            max_mask = xy_mask
+        if workspace.ensure_mask(max_mask) == 0:
+            self.last_face_count = 0
+            return GpuMeshData()
+
+        face_index: i32 = 0
+        face_index = voxel_write_greedy_face_with_mask(self, workspace.vertices, workspace.indices, face_index, 0, workspace.mask)
+        face_index = voxel_write_greedy_face_with_mask(self, workspace.vertices, workspace.indices, face_index, 1, workspace.mask)
+        face_index = voxel_write_greedy_face_with_mask(self, workspace.vertices, workspace.indices, face_index, 2, workspace.mask)
+        face_index = voxel_write_greedy_face_with_mask(self, workspace.vertices, workspace.indices, face_index, 3, workspace.mask)
+        face_index = voxel_write_greedy_face_with_mask(self, workspace.vertices, workspace.indices, face_index, 4, workspace.mask)
+        face_index = voxel_write_greedy_face_with_mask(self, workspace.vertices, workspace.indices, face_index, 5, workspace.mask)
+
+        if face_index <= 0:
+            self.last_face_count = 0
+            return GpuMeshData()
+        self.last_face_count = face_index
+        return GpuMeshData(vertices=workspace.vertices, vertex_count=face_index * 4, indices=workspace.indices, index_count=face_index * 6)
+
+    fun begin_mesh_into(self, workspace: VoxelMeshWorkspace) -> i32:
+        max_faces: i32 = self.visible_face_count()
+        if max_faces <= 0:
+            self.last_face_count = 0
+            return 0
+        if workspace.ensure_faces(max_faces) == 0:
+            self.last_face_count = 0
+            return 0 - 1
+        max_mask: i32 = self.size_x * self.size_z
+        yz_mask: i32 = self.size_y * self.size_z
+        xy_mask: i32 = self.size_x * self.size_y
+        if yz_mask > max_mask:
+            max_mask = yz_mask
+        if xy_mask > max_mask:
+            max_mask = xy_mask
+        if workspace.ensure_mask(max_mask) == 0:
+            self.last_face_count = 0
+            return 0 - 1
+        self.last_face_count = 0
+        return 1
+
+    fun build_mesh_face_into(self, workspace: VoxelMeshWorkspace, face: i32, face_index: i32) -> i32:
+        if workspace.vertices == 0:
+            return face_index
+        if workspace.indices == 0:
+            return face_index
+        if workspace.mask == 0:
+            return face_index
+        return voxel_write_greedy_face_with_mask(self, workspace.vertices, workspace.indices, face_index, face, workspace.mask)
+
+    fun upload_workspace_mesh(self, workspace: VoxelMeshWorkspace, face_count: i32) -> i32:
+        if face_count <= 0:
+            self.last_face_count = 0
+            return self.upload_built_mesh(GpuMeshData())
+        self.last_face_count = face_count
+        mesh: GpuMeshData = GpuMeshData(vertices=workspace.vertices, vertex_count=face_count * 4, indices=workspace.indices, index_count=face_count * 6)
+        return self.upload_built_mesh(mesh)
+
+    fun upload_built_mesh(self, mesh: GpuMeshData) -> i32:
         if mesh.vertices == 0:
             if self.mesh_id >= 0:
                 Engine.set_instance_visible(self.mesh_id, 0)
@@ -824,10 +987,19 @@ attach VoxelChunk:
                 self.mesh_id = next_mesh_id
         else:
             self.mesh_id = Engine.upload_mesh_data(mesh)
+        if self.mesh_id >= 0:
+            Engine.set_transform(self.mesh_id, self.pos_x, self.pos_y, self.pos_z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        return self.mesh_id
+
+    fun upload(self) -> i32:
+        mesh: GpuMeshData = self.build_mesh()
+        mesh_id: i32 = self.upload_built_mesh(mesh)
         if mesh.vertices != 0:
             Memory.free(mesh.vertices)
         if mesh.indices != 0:
             Memory.free(mesh.indices)
-        if self.mesh_id >= 0:
-            Engine.set_transform(self.mesh_id, self.pos_x, self.pos_y, self.pos_z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
-        return self.mesh_id
+        return mesh_id
+
+    fun upload_with_workspace(self, workspace: VoxelMeshWorkspace) -> i32:
+        mesh: GpuMeshData = self.build_mesh_into(workspace)
+        return self.upload_built_mesh(mesh)

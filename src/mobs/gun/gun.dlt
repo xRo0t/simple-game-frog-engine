@@ -10,6 +10,7 @@
 @heap struct GunNode:
     # GPU instance id for the gun mesh (-1 = not uploaded)
     gun_mesh_id: i32 = -1
+    model_matrix_ptr: i64 = 0
     # Last computed world transform (kept for debugging / future use).
     pos_x: f32 = 0.0
     pos_y: f32 = 0.0
@@ -66,11 +67,15 @@
 attach GunNode:
 
     fun destroy(self):
+        if self.model_matrix_ptr != 0:
+            Memory.free(self.model_matrix_ptr)
+            self.model_matrix_ptr = 0
         node_destroy(self as i64)
 
 fun gun_node_create(mesh_id: i32) -> GunNode:
     node: GunNode = GunNode()
     node.gun_mesh_id = mesh_id
+    node.model_matrix_ptr = Memory.malloc_zeroed(64)
     node.pos_x = 0.0
     node.pos_y = 0.0
     node.pos_z = 0.0

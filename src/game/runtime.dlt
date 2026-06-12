@@ -76,3 +76,4 @@ attach Engine:
         Engine.destroy_scene()
         Engine.shutdown()
         print("GPU closed")
+        Process.exit(0)

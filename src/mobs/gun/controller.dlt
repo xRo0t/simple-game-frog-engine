@@ -170,7 +170,11 @@ fun update_gun_player(gun: GunNode, player: PlayerNode):
     local_rot: Mat4 = Mat4.trs(off_right, off_up, 0.0 - base_fwd, gun.pitch_bias, gun.yaw_bias, roll, gun.gun_scale, gun.gun_scale, gun.gun_scale)
 
     model: Mat4 = cw.mul(local_rot)
-    mat_ptr: i64 = Memory.malloc_zeroed(64)
+    mat_ptr: i64 = gun.model_matrix_ptr
+    if mat_ptr == 0:
+        mat_ptr = Memory.malloc_zeroed(64)
+        gun.model_matrix_ptr = mat_ptr
+    if mat_ptr == 0:
+        return
     model.write_to_ptr(mat_ptr)
     Engine.set_model_matrix_raw(gun.gun_mesh_id, mat_ptr)
-    Memory.free(mat_ptr)
