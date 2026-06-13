@@ -26,6 +26,12 @@ attach Engine:
         if Engine.start() == 0:
             return
 
+        requested_present_mode: PresentMode = Engine.properties.present_mode()
+        active_present_mode: PresentMode = Engine.properties.active_present_mode()
+        requested_present_mode_name: str = PresentMode.name(requested_present_mode)
+        active_present_mode_name: str = PresentMode.name(active_present_mode)
+        print(@"Present mode requested={requested_present_mode_name}, active={active_present_mode_name}")
+
         earth: EarthNode = earth_node_create()
         earth.goblin_count = 10000
         goblins: GoblinState = earth.spawn_world()

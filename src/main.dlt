@@ -19,6 +19,7 @@ Engine.properties.set_present_mode(PresentMode.mailbox())
 #Engine.properties.set_target_fps(60)
 Engine.properties.set_frustum_culling(1)
 Engine.debug.render_stats(0)
+Engine.debug.frame_pacing(1)
 #
 Engine.properties.set_render_scale(2.0)
 #print(Engine.properties.render_scale())
