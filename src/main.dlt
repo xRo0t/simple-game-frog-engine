@@ -7,8 +7,8 @@ import frog
 import game.runtime
 
 Engine.window.create("Simple Game - OOP Nodes", 1200, 720)
-Engine.window.set_mode(WindowMode.fullscreen())
-#Engine.window.set_mode(WindowMode.windowed())
+#Engine.window.set_mode(WindowMode.fullscreen())
+Engine.window.set_mode(WindowMode.windowed())
 #Engine.window.set_mode(WindowMode.borderless_fullscreen())
 # Try one present mode at a time:
 #Engine.properties.set_present_mode(PresentMode.auto())
@@ -49,6 +49,11 @@ sky.set_sun_glow(0.70)
 env.set_sky(sky)
 env.set_fog(Fog.view_distance(sky.fog_color(), 450.0))
 scene.set_environment(env)
+
+cycle: DayCycle = DayCycle.create(sky_sun)
+cycle.set_duration(60.0)
+cycle.set_time(0.76)
+scene.set_day_cycle(cycle)
 
 player_actor: Node3D = Node3D.create("Player")
 player_model: Model3D = Assets.models.load("models/player/scene.gltf")
