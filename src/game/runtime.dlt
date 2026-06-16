@@ -20,6 +20,43 @@ import world.earth
 import world.terrain
 import world.block_edit
 
+const DEBUG_KEY_PLUS: i32 = 187
+const DEBUG_KEY_NUM_PLUS: i32 = 107
+const DEBUG_KEY_MINUS: i32 = 189
+const DEBUG_KEY_NUM_MINUS: i32 = 109
+
+fun update_sun_debug_controls(dt: f32):
+    scene: Scene = Engine.scene.current()
+    if scene.has_day_cycle() == 0:
+        return
+
+    plus_down: i32 = 0
+    minus_down: i32 = 0
+    if Input.key_down(DEBUG_KEY_PLUS) == 1:
+        plus_down = 1
+    if Input.key_down(DEBUG_KEY_NUM_PLUS) == 1:
+        plus_down = 1
+    if Input.key_down(DEBUG_KEY_MINUS) == 1:
+        minus_down = 1
+    if Input.key_down(DEBUG_KEY_NUM_MINUS) == 1:
+        minus_down = 1
+    if plus_down == 0:
+        if minus_down == 0:
+            return
+
+    speed: f32 = 0.08
+    if Input.key_down(KEY_SHIFT) == 1:
+        speed = 0.25
+
+    cycle: DayCycle = scene.day_cycle()
+    phase: f32 = cycle.time()
+    if plus_down == 1:
+        phase = phase - speed * dt
+    if minus_down == 1:
+        phase = phase + speed * dt
+    cycle.set_time(phase)
+    scene.update_day_cycle(0.0)
+
 attach Engine:
 
     static fun run():
@@ -66,6 +103,7 @@ attach Engine:
                 update_gun_drop(gun, dt)
             bullet_try_fire(bullets, player, gun.held)
             update_bullets(bullets, dt)
+            update_sun_debug_controls(dt)
 
             yaw_rad: f32 = deg2rad(player.yaw)
             cam_fwd_x: f32 = 0.0 - @sin(yaw_rad)
