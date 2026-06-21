@@ -37,7 +37,7 @@ attach VoxelMeshWorkspace:
             next_capacity = 1024
         while next_capacity < needed:
             next_capacity = next_capacity * 2
-        next_vertices: i64 = Memory.malloc_zeroed((next_capacity as i64) * 4 * 32)
+        next_vertices: i64 = Memory.malloc_zeroed((next_capacity as i64) * 4 * (FROG_GPU_VERTEX_STRIDE as i64))
         if next_vertices == 0:
             return 0
         next_indices: i64 = Memory.malloc_zeroed((next_capacity as i64) * 6 * 4)
@@ -135,6 +135,39 @@ fun voxel_write_face_indices(indices: i64, face_index: i32, base_vertex: i32):
     Memory.write_i32(indices + ioff + 12, base_vertex)
     Memory.write_i32(indices + ioff + 16, base_vertex + 2)
     Memory.write_i32(indices + ioff + 20, base_vertex + 3)
+
+fun voxel_write_face_normals(vertices: i64, base_vertex: i32, face: i32):
+    nx: f32 = 0.0
+    ny: f32 = 0.0
+    nz: f32 = 0.0
+    if face == 0:
+        nx = 0.0 - 1.0
+    elif face == 1:
+        nx = 1.0
+    elif face == 2:
+        ny = 0.0 - 1.0
+    elif face == 3:
+        ny = 1.0
+    elif face == 4:
+        nz = 0.0 - 1.0
+    else:
+        nz = 1.0
+    off: i64 = (base_vertex as i64) * (FROG_GPU_VERTEX_STRIDE as i64) + FROG_GPU_VERTEX_NORMAL_OFFSET
+    Memory.write_f32(vertices + off, nx)
+    Memory.write_f32(vertices + off + 4, ny)
+    Memory.write_f32(vertices + off + 8, nz)
+    off = ((base_vertex + 1) as i64) * (FROG_GPU_VERTEX_STRIDE as i64) + FROG_GPU_VERTEX_NORMAL_OFFSET
+    Memory.write_f32(vertices + off, nx)
+    Memory.write_f32(vertices + off + 4, ny)
+    Memory.write_f32(vertices + off + 8, nz)
+    off = ((base_vertex + 2) as i64) * (FROG_GPU_VERTEX_STRIDE as i64) + FROG_GPU_VERTEX_NORMAL_OFFSET
+    Memory.write_f32(vertices + off, nx)
+    Memory.write_f32(vertices + off + 4, ny)
+    Memory.write_f32(vertices + off + 8, nz)
+    off = ((base_vertex + 3) as i64) * (FROG_GPU_VERTEX_STRIDE as i64) + FROG_GPU_VERTEX_NORMAL_OFFSET
+    Memory.write_f32(vertices + off, nx)
+    Memory.write_f32(vertices + off + 4, ny)
+    Memory.write_f32(vertices + off + 8, nz)
 
 fun voxel_atlas_u(chunk: VoxelChunk, block_id: i32, face: i32, local_u: f32) -> f32:
     if chunk.atlas_cols <= 0:
@@ -327,7 +360,7 @@ fun voxel_write_face(chunk: VoxelChunk, vertices: i64, indices: i64, face_index:
     cr: f32 = chunk.block_r(block_id)
     cg: f32 = chunk.block_g(block_id)
     cb: f32 = chunk.block_b(block_id)
-    off: i64 = (face_index as i64) * 128
+    off: i64 = (face_index as i64) * 4 * (FROG_GPU_VERTEX_STRIDE as i64)
     base_vertex: i32 = face_index * 4
     u0t: f32 = voxel_atlas_u(chunk, block_id, face, 0.0)
     u1t: f32 = voxel_atlas_u(chunk, block_id, face, 1.0)
@@ -365,6 +398,7 @@ fun voxel_write_face(chunk: VoxelChunk, vertices: i64, indices: i64, face_index:
         off = gpu_wv(vertices, off, x1, y1, z1, cr, cg, cb, u1t, v0t)
         off = gpu_wv(vertices, off, x0, y1, z1, cr, cg, cb, u0t, v0t)
 
+    voxel_write_face_normals(vertices, base_vertex, face)
     voxel_write_face_indices(indices, face_index, base_vertex)
     return face_index + 1
 
@@ -378,7 +412,7 @@ fun voxel_write_quad(chunk: VoxelChunk, vertices: i64, indices: i64, face_index:
     cr: f32 = chunk.block_r(block_id)
     cg: f32 = chunk.block_g(block_id)
     cb: f32 = chunk.block_b(block_id)
-    off: i64 = (face_index as i64) * 128
+    off: i64 = (face_index as i64) * 4 * (FROG_GPU_VERTEX_STRIDE as i64)
     base_vertex: i32 = face_index * 4
     uw: f32 = 1.0
     vh: f32 = 1.0
@@ -442,6 +476,7 @@ fun voxel_write_quad(chunk: VoxelChunk, vertices: i64, indices: i64, face_index:
         off = voxel_write_ao_vertex(vertices, off, x1, y1, z1, cr, cg, cb, u1t, v0t, ao2)
         off = voxel_write_ao_vertex(vertices, off, x0, y1, z1, cr, cg, cb, u0t, v0t, ao3)
 
+    voxel_write_face_normals(vertices, base_vertex, face)
     voxel_write_face_indices(indices, face_index, base_vertex)
     return face_index + 1
 
@@ -879,7 +914,7 @@ attach VoxelChunk:
             return GpuMeshData()
         max_vertex_count: i32 = max_faces * 4
         max_index_count: i32 = max_faces * 6
-        vertices: i64 = Memory.malloc_zeroed((max_vertex_count as i64) * 32)
+        vertices: i64 = Memory.malloc_zeroed((max_vertex_count as i64) * (FROG_GPU_VERTEX_STRIDE as i64))
         if vertices == 0:
             return GpuMeshData()
         indices: i64 = Memory.malloc_zeroed((max_index_count as i64) * 4)
