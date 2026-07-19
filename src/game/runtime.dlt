@@ -20,10 +20,10 @@ import world.earth
 import world.terrain
 import world.block_edit
 
-const DEBUG_KEY_PLUS: i32 = 187
-const DEBUG_KEY_NUM_PLUS: i32 = 107
-const DEBUG_KEY_MINUS: i32 = 189
-const DEBUG_KEY_NUM_MINUS: i32 = 109
+imm DEBUG_KEY_PLUS: i32 = 187
+imm DEBUG_KEY_NUM_PLUS: i32 = 107
+imm DEBUG_KEY_MINUS: i32 = 189
+imm DEBUG_KEY_NUM_MINUS: i32 = 109
 
 fun update_sun_debug_controls(dt: f32):
     scene: Scene = Engine.scene.current()
@@ -70,7 +70,7 @@ attach Engine:
         print(@"Present mode requested={requested_present_mode_name}, active={active_present_mode_name}")
 
         earth: EarthNode = earth_node_create()
-        earth.goblin_count = 10000
+        earth.goblin_count = 0#10000
         goblins: GoblinState = earth.spawn_world()
         terrain: TerrainWorld = earth.terrain_world_ptr as TerrainWorld
 

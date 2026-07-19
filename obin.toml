@@ -1,0 +1,35 @@
+[application]
+name = "simple-game-frog-oop-3d"
+version = "0.1.0"
+entry = "src/main.dlt"
+type = "game"
+
+[build]
+target = "windows"
+default-profile = "dev"
+incremental = true
+
+[profiles.dev]
+optimization = 0
+no-console = false
+
+[profiles.release]
+optimization = 3
+no-console = true
+
+[packages]
+auto-sync = true
+
+[assets]
+roots = ["assets"]
+destination = "assets"
+
+[tool.frog]
+enabled = true
+cook-models = true
+lods = [0.45, 0.22]
+
+[package]
+directory = "dist"
+include-assets = true
+

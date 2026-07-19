@@ -3,6 +3,9 @@ compare/
 
 # Build output + dev artifacts (exes, objects, logs, screenshots)
 build/
+dist/
+.obin/
+*.frogmodel
 
 # Compiler intermediates left next to sources
 *.obj
