@@ -285,6 +285,8 @@ fun terrain_mesh_worker_loop(world_addr: i64):
                             lod_begin: i32 = chunk.begin_lod_mesh_into(workspace, lod_step)
                             if lod_begin > 0:
                                 face_count = chunk.build_lod_mesh_into(workspace, lod_step)
+                        if face_count > 0:
+                            chunk.bake_mesh_position(workspace.vertices, face_count * 4)
             world.mesh_job_face_count = face_count
             state.store(3)
         else:
@@ -1191,7 +1193,7 @@ attach TerrainWorld:
                 return 0
             async_workspace: VoxelMeshWorkspace = self.mesh_async_workspace_ptr as VoxelMeshWorkspace
             live_chunk: VoxelChunk = ptr as VoxelChunk
-            async_mesh_id: i32 = live_chunk.upload_workspace_mesh(async_workspace, self.mesh_job_face_count)
+            async_mesh_id: i32 = live_chunk.upload_workspace_mesh_baked(async_workspace, self.mesh_job_face_count)
             if async_mesh_id >= 0:
                 live_chunk.mesh_lod = self.mesh_job_lod
                 if self.grass_texture_id >= 0:

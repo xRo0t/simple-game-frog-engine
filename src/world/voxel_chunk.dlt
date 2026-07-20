@@ -1341,7 +1341,32 @@ attach VoxelChunk:
         mesh: GpuMeshData = GpuMeshData(vertices=workspace.vertices, vertex_count=face_count * 4, indices=workspace.indices, index_count=face_count * 6)
         return self.upload_built_mesh(mesh)
 
+    # The async mesher can bake world coordinates before publishing its
+    # result, keeping the render thread free from an O(vertex_count) Dolet
+    # loop when a streamed chunk finishes.
+    fun bake_mesh_position(self, vertices: i64, vertex_count: i32):
+        if vertices == 0:
+            return
+        bake_i: i32 = 0
+        while bake_i < vertex_count:
+            bake_off: i64 = (bake_i as i64) * (FROG_GPU_VERTEX_STRIDE as i64)
+            Memory.write_f32(vertices + bake_off, Memory.read_f32(vertices + bake_off) + self.pos_x)
+            Memory.write_f32(vertices + bake_off + 4, Memory.read_f32(vertices + bake_off + 4) + self.pos_y)
+            Memory.write_f32(vertices + bake_off + 8, Memory.read_f32(vertices + bake_off + 8) + self.pos_z)
+            bake_i = bake_i + 1
+
+    fun upload_workspace_mesh_baked(self, workspace: VoxelMeshWorkspace, face_count: i32) -> i32:
+        if face_count <= 0:
+            self.last_face_count = 0
+            return self.upload_built_mesh_ready(GpuMeshData(), 1)
+        self.last_face_count = face_count
+        mesh: GpuMeshData = GpuMeshData(vertices=workspace.vertices, vertex_count=face_count * 4, indices=workspace.indices, index_count=face_count * 6)
+        return self.upload_built_mesh_ready(mesh, 1)
+
     fun upload_built_mesh(self, mesh: GpuMeshData) -> i32:
+        return self.upload_built_mesh_ready(mesh, 0)
+
+    fun upload_built_mesh_ready(self, mesh: GpuMeshData, world_baked: i32) -> i32:
         if mesh.vertices == 0:
             if self.mesh_id >= 0:
                 self.set_render_visible(0)
@@ -1350,13 +1375,8 @@ attach VoxelChunk:
         # Terrain is static between remeshes. Bake the chunk translation into
         # vertex positions so all chunks can share one identity instance and
         # Frog can submit every arena page as a single multi-draw batch.
-        bake_i: i32 = 0
-        while bake_i < mesh.vertex_count:
-            bake_off: i64 = (bake_i as i64) * (FROG_GPU_VERTEX_STRIDE as i64)
-            Memory.write_f32(mesh.vertices + bake_off, Memory.read_f32(mesh.vertices + bake_off) + self.pos_x)
-            Memory.write_f32(mesh.vertices + bake_off + 4, Memory.read_f32(mesh.vertices + bake_off + 4) + self.pos_y)
-            Memory.write_f32(mesh.vertices + bake_off + 8, Memory.read_f32(mesh.vertices + bake_off + 8) + self.pos_z)
-            bake_i = bake_i + 1
+        if world_baked == 0:
+            self.bake_mesh_position(mesh.vertices, mesh.vertex_count)
         if self.mesh_id >= 0:
             next_mesh_id: i32 = Engine.replace_dynamic_mesh_data(self.mesh_id, mesh)
             if next_mesh_id >= 0:
