@@ -87,6 +87,18 @@ attach VoxelMeshWorkspace:
         self.mask_capacity = 0
         Memory.free(self as i64)
 
+# Immutable CPU-side copy used by the terrain meshing worker. The render
+# thread keeps owning live chunks while the worker reads this snapshot, so
+# block edits and chunk recycling never race with greedy meshing.
+@heap struct VoxelMeshSnapshot:
+    chunk_ptr: i64 = 0
+    neg_x_ptr: i64 = 0
+    pos_x_ptr: i64 = 0
+    neg_y_ptr: i64 = 0
+    pos_y_ptr: i64 = 0
+    neg_z_ptr: i64 = 0
+    pos_z_ptr: i64 = 0
+
 @heap struct VoxelChunk:
     size_x: i32 = 0
     size_y: i32 = 0
@@ -776,10 +788,45 @@ attach VoxelChunk:
         idx: i64 = self.index(x, y, z) as i64
         Memory.write_i32(self.blocks + idx * 4, block_id)
 
+    fun clone_blocks_only(self) -> VoxelChunk:
+        clone: VoxelChunk = VoxelChunk()
+        clone.size_x = self.size_x
+        clone.size_y = self.size_y
+        clone.size_z = self.size_z
+        total_bytes: i64 = (self.size_x as i64) * (self.size_y as i64) * (self.size_z as i64) * 4
+        clone.blocks = Memory.malloc(total_bytes)
+        if clone.blocks != 0:
+            if self.blocks != 0:
+                Memory.copy(clone.blocks, self.blocks, total_bytes)
+            else:
+                Memory.set(clone.blocks, 0, total_bytes)
+        return clone
+
+    fun clone_for_meshing(self) -> VoxelChunk:
+        clone: VoxelChunk = self.clone_blocks_only()
+        clone.pos_x = self.pos_x
+        clone.pos_y = self.pos_y
+        clone.pos_z = self.pos_z
+        clone.atlas_cols = self.atlas_cols
+        clone.atlas_rows = self.atlas_rows
+        clone.atlas_repeat_span = self.atlas_repeat_span
+        if self.palette != 0:
+            clone.palette = Memory.malloc(3072)
+            if clone.palette != 0:
+                Memory.copy(clone.palette, self.palette, 3072)
+        if self.tile_indices != 0:
+            clone.tile_indices = Memory.malloc(6144)
+            if clone.tile_indices != 0:
+                Memory.copy(clone.tile_indices, self.tile_indices, 6144)
+        return clone
+
     fun fill(self, block_id: i32):
         if self.blocks == 0:
             return
         total: i32 = self.size_x * self.size_y * self.size_z
+        if block_id == BlockId.air():
+            Memory.set(self.blocks, 0, total * 4)
+            return
         i: i32 = 0
         while i < total:
             Memory.write_i32(self.blocks + ((i as i64) * 4), block_id)
@@ -1038,3 +1085,53 @@ attach VoxelChunk:
     fun upload_with_workspace(self, workspace: VoxelMeshWorkspace) -> i32:
         mesh: GpuMeshData = self.build_mesh_into(workspace)
         return self.upload_built_mesh(mesh)
+
+fun voxel_clone_neighbor_blocks(ptr: i64) -> i64:
+    if ptr == 0:
+        return 0
+    source: VoxelChunk = ptr as VoxelChunk
+    clone: VoxelChunk = source.clone_blocks_only()
+    return clone as i64
+
+fun voxel_destroy_snapshot_chunk(ptr: i64):
+    if ptr == 0:
+        return
+    chunk: VoxelChunk = ptr as VoxelChunk
+    chunk.destroy()
+
+attach VoxelMeshSnapshot:
+
+    static fun create(source: VoxelChunk) -> VoxelMeshSnapshot:
+        snapshot: VoxelMeshSnapshot = VoxelMeshSnapshot()
+        root: VoxelChunk = source.clone_for_meshing()
+        snapshot.chunk_ptr = root as i64
+        snapshot.neg_x_ptr = voxel_clone_neighbor_blocks(source.neighbor_neg_x_ptr)
+        snapshot.pos_x_ptr = voxel_clone_neighbor_blocks(source.neighbor_pos_x_ptr)
+        snapshot.neg_y_ptr = voxel_clone_neighbor_blocks(source.neighbor_neg_y_ptr)
+        snapshot.pos_y_ptr = voxel_clone_neighbor_blocks(source.neighbor_pos_y_ptr)
+        snapshot.neg_z_ptr = voxel_clone_neighbor_blocks(source.neighbor_neg_z_ptr)
+        snapshot.pos_z_ptr = voxel_clone_neighbor_blocks(source.neighbor_pos_z_ptr)
+        root.set_neighbor_ptr(0, snapshot.neg_x_ptr)
+        root.set_neighbor_ptr(1, snapshot.pos_x_ptr)
+        root.set_neighbor_ptr(2, snapshot.neg_y_ptr)
+        root.set_neighbor_ptr(3, snapshot.pos_y_ptr)
+        root.set_neighbor_ptr(4, snapshot.neg_z_ptr)
+        root.set_neighbor_ptr(5, snapshot.pos_z_ptr)
+        return snapshot
+
+    fun destroy(self):
+        voxel_destroy_snapshot_chunk(self.chunk_ptr)
+        voxel_destroy_snapshot_chunk(self.neg_x_ptr)
+        voxel_destroy_snapshot_chunk(self.pos_x_ptr)
+        voxel_destroy_snapshot_chunk(self.neg_y_ptr)
+        voxel_destroy_snapshot_chunk(self.pos_y_ptr)
+        voxel_destroy_snapshot_chunk(self.neg_z_ptr)
+        voxel_destroy_snapshot_chunk(self.pos_z_ptr)
+        self.chunk_ptr = 0
+        self.neg_x_ptr = 0
+        self.pos_x_ptr = 0
+        self.neg_y_ptr = 0
+        self.pos_y_ptr = 0
+        self.neg_z_ptr = 0
+        self.pos_z_ptr = 0
+        Memory.free(self as i64)

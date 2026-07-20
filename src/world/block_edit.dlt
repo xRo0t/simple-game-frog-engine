@@ -78,15 +78,15 @@ attach TerrainWorld:
             return 0
 
         chunk.set(local_x, block_y, local_z, block_id)
-        self.mark_dirty_slot(slot)
+        self.mark_urgent_dirty_slot(slot)
         if local_x == 0:
-            self.mark_dirty_chunk_at(chunk_x - 1, chunk_z)
+            self.mark_urgent_dirty_chunk_at(chunk_x - 1, chunk_z)
         if local_x == self.chunk_size - 1:
-            self.mark_dirty_chunk_at(chunk_x + 1, chunk_z)
+            self.mark_urgent_dirty_chunk_at(chunk_x + 1, chunk_z)
         if local_z == 0:
-            self.mark_dirty_chunk_at(chunk_x, chunk_z - 1)
+            self.mark_urgent_dirty_chunk_at(chunk_x, chunk_z - 1)
         if local_z == self.chunk_size - 1:
-            self.mark_dirty_chunk_at(chunk_x, chunk_z + 1)
+            self.mark_urgent_dirty_chunk_at(chunk_x, chunk_z + 1)
         return 1
 
     fun raycast_blocks(self, origin_x: f32, origin_y: f32, origin_z: f32, dir_x: f32, dir_y: f32, dir_z: f32, max_dist: f32) -> BlockHit:

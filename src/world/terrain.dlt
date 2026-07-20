@@ -137,19 +137,16 @@ fun terrain_generate_chunk(chunk: VoxelChunk, seed: i32, origin_x: i32, origin_z
             wz: i32 = origin_z + z
             h: i32 = terrain_height_at(wx, wz, seed, top_limit)
             y = 0
-            while y < chunk.size_y:
-                if y <= h:
-                    if y == h:
-                        if h > 11:
-                            chunk.set(x, y, z, terrain_stone())
-                        else:
-                            chunk.set(x, y, z, terrain_grass())
-                    elif y > h - 3:
-                        chunk.set(x, y, z, terrain_dirt())
-                    else:
+            while y <= h:
+                if y == h:
+                    if h > 11:
                         chunk.set(x, y, z, terrain_stone())
+                    else:
+                        chunk.set(x, y, z, terrain_grass())
+                elif y > h - 3:
+                    chunk.set(x, y, z, terrain_dirt())
                 else:
-                    chunk.set(x, y, z, terrain_air())
+                    chunk.set(x, y, z, terrain_stone())
                 y = y + 1
             x = x + 1
         z = z + 1
@@ -191,11 +188,19 @@ fun terrain_abs_f32(v: f32) -> f32:
     pending_stages: i64 = 0
     dirty_slots: i64 = 0
     dirty_flags: i64 = 0
+    urgent_slots: i64 = 0
+    urgent_flags: i64 = 0
     mesh_workspace_ptr: i64 = 0
     mesh_job_slot: i32 = -1
     mesh_job_face: i32 = 0
     mesh_job_face_count: i32 = 0
     mesh_job_source: i32 = 0
+    mesh_job_restart: i32 = 0
+    mesh_async_snapshot_ptr: i64 = 0
+    mesh_async_workspace_ptr: i64 = 0
+    mesh_worker_state_ptr: i64 = 0
+    mesh_worker_shutdown_ptr: i64 = 0
+    mesh_worker_thread_handle: i64 = 0
     chunk_count: i32 = 0
     grid_size: i32 = 0
     pool_grid_size: i32 = 0
@@ -212,6 +217,8 @@ fun terrain_abs_f32(v: f32) -> f32:
     dirty_count: i32 = 0
     dirty_cursor: i32 = 0
     dirty_budget: i32 = 1
+    urgent_count: i32 = 0
+    urgent_cursor: i32 = 0
     visibility_cursor: i32 = 0
     visibility_budget: i32 = 96
     occlusion_enabled: i32 = 1
@@ -226,6 +233,32 @@ fun terrain_abs_f32(v: f32) -> f32:
     stream_debug_max_ms: f64 = 0.0
     edit_left_down: i32 = 0
     edit_right_down: i32 = 0
+
+# Persistent game-owned CPU mesher. It never calls Frog or Vulkan: it only
+# reads an immutable voxel snapshot and writes private CPU mesh buffers.
+fun terrain_mesh_worker_loop(world_addr: i64):
+    world: TerrainWorld = world_addr as TerrainWorld
+    state: AtomicI32 = world.mesh_worker_state_ptr as AtomicI32
+    shutdown: AtomicI32 = world.mesh_worker_shutdown_ptr as AtomicI32
+    while shutdown.load() == 0:
+        if state.cas(1, 2):
+            face_count: i32 = 0
+            if world.mesh_async_snapshot_ptr != 0:
+                if world.mesh_async_workspace_ptr != 0:
+                    snapshot: VoxelMeshSnapshot = world.mesh_async_snapshot_ptr as VoxelMeshSnapshot
+                    workspace: VoxelMeshWorkspace = world.mesh_async_workspace_ptr as VoxelMeshWorkspace
+                    if snapshot.chunk_ptr != 0:
+                        chunk: VoxelChunk = snapshot.chunk_ptr as VoxelChunk
+                        begin_result: i32 = chunk.begin_mesh_into(workspace)
+                        if begin_result > 0:
+                            face: i32 = 0
+                            while face < 6:
+                                face_count = chunk.build_mesh_face_into(workspace, face, face_count)
+                                face = face + 1
+            world.mesh_job_face_count = face_count
+            state.store(3)
+        else:
+            Thread.sleep(1)
 
 attach TerrainWorld:
 
@@ -243,6 +276,8 @@ attach TerrainWorld:
         pending_stages: i64 = Memory.malloc_zeroed((count as i64) * 4)
         dirty_slots: i64 = Memory.malloc_zeroed((count as i64) * 4)
         dirty_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        urgent_slots: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        urgent_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
         world: TerrainWorld = TerrainWorld()
         world.chunks = chunks
         world.chunk_world_xs = chunk_world_xs
@@ -254,12 +289,25 @@ attach TerrainWorld:
         world.pending_stages = pending_stages
         world.dirty_slots = dirty_slots
         world.dirty_flags = dirty_flags
+        world.urgent_slots = urgent_slots
+        world.urgent_flags = urgent_flags
         workspace: VoxelMeshWorkspace = VoxelMeshWorkspace.create()
         world.mesh_workspace_ptr = workspace as i64
         world.mesh_job_slot = -1
         world.mesh_job_face = 0
         world.mesh_job_face_count = 0
         world.mesh_job_source = 0
+        world.mesh_job_restart = 0
+        world.mesh_async_snapshot_ptr = 0
+        async_workspace: VoxelMeshWorkspace = VoxelMeshWorkspace.create()
+        world.mesh_async_workspace_ptr = async_workspace as i64
+        worker_state: AtomicI32 = AtomicI32.new(0)
+        worker_shutdown: AtomicI32 = AtomicI32.new(0)
+        world.mesh_worker_state_ptr = worker_state as i64
+        world.mesh_worker_shutdown_ptr = worker_shutdown as i64
+        worker_work: @heap fun() = fun() terrain_mesh_worker_loop(world as i64)
+        worker_thread: Thread = Thread.spawn(worker_work)
+        world.mesh_worker_thread_handle = worker_thread.handle
         world.chunk_count = count
         world.grid_size = grid_size
         world.pool_grid_size = pool_grid_size
@@ -276,6 +324,8 @@ attach TerrainWorld:
         world.dirty_count = 0
         world.dirty_cursor = 0
         world.dirty_budget = 1
+        world.urgent_count = 0
+        world.urgent_cursor = 0
         world.visibility_cursor = 0
         world.visibility_budget = 96
         world.occlusion_enabled = 1
@@ -292,7 +342,37 @@ attach TerrainWorld:
         world.edit_right_down = 0
         return world
 
+    fun cleanup_async_mesh_snapshot(self):
+        if self.mesh_async_snapshot_ptr != 0:
+            snapshot: VoxelMeshSnapshot = self.mesh_async_snapshot_ptr as VoxelMeshSnapshot
+            snapshot.destroy()
+            self.mesh_async_snapshot_ptr = 0
+
+    fun destroy_async_mesh_resources(self):
+        self.cleanup_async_mesh_snapshot()
+        if self.mesh_async_workspace_ptr != 0:
+            workspace: VoxelMeshWorkspace = self.mesh_async_workspace_ptr as VoxelMeshWorkspace
+            workspace.destroy()
+            self.mesh_async_workspace_ptr = 0
+
+    fun shutdown_mesh_worker(self):
+        if self.mesh_worker_shutdown_ptr != 0:
+            shutdown: AtomicI32 = self.mesh_worker_shutdown_ptr as AtomicI32
+            shutdown.store(1)
+        if self.mesh_worker_thread_handle != 0:
+            worker: Thread = Thread(handle=self.mesh_worker_thread_handle)
+            worker.join()
+            self.mesh_worker_thread_handle = 0
+        self.destroy_async_mesh_resources()
+        if self.mesh_worker_state_ptr != 0:
+            Memory.free(self.mesh_worker_state_ptr)
+            self.mesh_worker_state_ptr = 0
+        if self.mesh_worker_shutdown_ptr != 0:
+            Memory.free(self.mesh_worker_shutdown_ptr)
+            self.mesh_worker_shutdown_ptr = 0
+
     fun destroy(self):
+        self.shutdown_mesh_worker()
         if self.chunks != 0:
             i: i32 = 0
             while i < self.chunk_count:
@@ -330,6 +410,12 @@ attach TerrainWorld:
         if self.dirty_flags != 0:
             Memory.free(self.dirty_flags)
             self.dirty_flags = 0
+        if self.urgent_slots != 0:
+            Memory.free(self.urgent_slots)
+            self.urgent_slots = 0
+        if self.urgent_flags != 0:
+            Memory.free(self.urgent_flags)
+            self.urgent_flags = 0
         if self.mesh_workspace_ptr != 0:
             workspace: VoxelMeshWorkspace = self.mesh_workspace_ptr as VoxelMeshWorkspace
             workspace.destroy()
@@ -546,12 +632,26 @@ attach TerrainWorld:
         self.dirty_count = 0
         self.dirty_cursor = 0
 
+    fun clear_urgent(self):
+        if self.urgent_flags == 0:
+            return
+        i: i32 = 0
+        while i < self.chunk_count:
+            Memory.write_i32(self.urgent_flags + i * 4, 0)
+            i = i + 1
+        self.urgent_count = 0
+        self.urgent_cursor = 0
+        self.mesh_job_restart = 0
+
     fun find_reusable_slot(self) -> i32:
         i: i32 = 0
         while i < self.chunk_count:
             busy: i32 = Memory.read_i32(self.pending_flags + i * 4)
             if self.dirty_flags != 0:
                 if Memory.read_i32(self.dirty_flags + i * 4) != 0:
+                    busy = 1
+            if self.urgent_flags != 0:
+                if Memory.read_i32(self.urgent_flags + i * 4) != 0:
                     busy = 1
             if busy == 0:
                 ptr: i64 = Memory.read_ptr(self.chunks + ((i as i64) * 8))
@@ -563,6 +663,9 @@ attach TerrainWorld:
             busy2: i32 = Memory.read_i32(self.pending_flags + i * 4)
             if self.dirty_flags != 0:
                 if Memory.read_i32(self.dirty_flags + i * 4) != 0:
+                    busy2 = 1
+            if self.urgent_flags != 0:
+                if Memory.read_i32(self.urgent_flags + i * 4) != 0:
                     busy2 = 1
             if busy2 == 0:
                 sx: i32 = Memory.read_i32(self.chunk_world_xs + i * 4)
@@ -615,6 +718,48 @@ attach TerrainWorld:
     fun mark_dirty_chunk_at(self, chunk_x: i32, chunk_z: i32):
         self.mark_dirty_slot(self.find_chunk_coord(chunk_x, chunk_z))
 
+    # Player edits use a separate high-priority queue. Streaming seam work
+    # must never delay the visible result of breaking or placing a block.
+    fun mark_urgent_dirty_slot(self, slot: i32):
+        if slot < 0:
+            return
+        if slot >= self.chunk_count:
+            return
+        if self.urgent_slots == 0:
+            return
+        if self.urgent_flags == 0:
+            return
+        if self.mesh_job_slot == slot:
+            self.mesh_job_restart = 1
+        if Memory.read_i32(self.urgent_flags + slot * 4) != 0:
+            return
+        if self.urgent_count >= self.chunk_count:
+            return
+        if self.chunk_ptr_for_slot(slot) == 0:
+            return
+        Memory.write_i32(self.urgent_slots + self.urgent_count * 4, slot)
+        Memory.write_i32(self.urgent_flags + slot * 4, 1)
+        self.urgent_count = self.urgent_count + 1
+
+    fun mark_urgent_dirty_chunk_at(self, chunk_x: i32, chunk_z: i32):
+        self.mark_urgent_dirty_slot(self.find_chunk_coord(chunk_x, chunk_z))
+
+    fun find_pending_coord(self, chunk_x: i32, chunk_z: i32) -> i32:
+        i: i32 = self.pending_cursor
+        while i < self.pending_count:
+            if Memory.read_i32(self.pending_xs + i * 4) == chunk_x:
+                if Memory.read_i32(self.pending_zs + i * 4) == chunk_z:
+                    return i
+            i = i + 1
+        return 0 - 1
+
+    fun coord_is_loaded_or_pending(self, chunk_x: i32, chunk_z: i32) -> i32:
+        if self.find_chunk_coord(chunk_x, chunk_z) >= 0:
+            return 1
+        if self.find_pending_coord(chunk_x, chunk_z) >= 0:
+            return 1
+        return 0
+
     fun schedule_missing_chunks(self):
         if self.pending_count == 0:
             self.clear_pending()
@@ -625,12 +770,74 @@ attach TerrainWorld:
             while gx < self.grid_size:
                 want_x: i32 = self.center_chunk_x + gx - half_grid
                 want_z: i32 = self.center_chunk_z + gz - half_grid
-                if self.find_chunk_coord(want_x, want_z) < 0:
-                    slot: i32 = self.find_reusable_slot()
-                    if slot >= 0:
-                        self.queue_slot_target(slot, want_x, want_z)
+                self.schedule_chunk_if_missing(want_x, want_z)
                 gx = gx + 1
             gz = gz + 1
+
+    fun schedule_chunk_if_missing(self, chunk_x: i32, chunk_z: i32):
+        if self.coord_is_loaded_or_pending(chunk_x, chunk_z) != 0:
+            return
+        slot: i32 = self.find_reusable_slot()
+        if slot >= 0:
+            self.queue_slot_target(slot, chunk_x, chunk_z)
+
+    # Normal movement only exposes one row or column. Scheduling only that
+    # strip avoids the old O(visibleChunks * poolChunks) boundary-frame scan.
+    fun schedule_shifted_chunks(self, old_x: i32, old_z: i32, new_x: i32, new_z: i32):
+        half_grid: i32 = self.grid_size / 2
+        dx: i32 = new_x - old_x
+        dz: i32 = new_z - old_z
+        abs_dx: i32 = dx
+        abs_dz: i32 = dz
+        if abs_dx < 0:
+            abs_dx = 0 - abs_dx
+        if abs_dz < 0:
+            abs_dz = 0 - abs_dz
+        if abs_dx >= self.grid_size or abs_dz >= self.grid_size:
+            self.schedule_missing_chunks()
+            return
+
+        min_z: i32 = new_z - half_grid
+        max_z: i32 = new_z + half_grid
+        if dx > 0:
+            x: i32 = old_x + half_grid + 1
+            last_x: i32 = new_x + half_grid
+            while x <= last_x:
+                z: i32 = min_z
+                while z <= max_z:
+                    self.schedule_chunk_if_missing(x, z)
+                    z = z + 1
+                x = x + 1
+        elif dx < 0:
+            x2: i32 = new_x - half_grid
+            last_x2: i32 = old_x - half_grid - 1
+            while x2 <= last_x2:
+                z2: i32 = min_z
+                while z2 <= max_z:
+                    self.schedule_chunk_if_missing(x2, z2)
+                    z2 = z2 + 1
+                x2 = x2 + 1
+
+        min_x: i32 = new_x - half_grid
+        max_x: i32 = new_x + half_grid
+        if dz > 0:
+            z3: i32 = old_z + half_grid + 1
+            last_z: i32 = new_z + half_grid
+            while z3 <= last_z:
+                x3: i32 = min_x
+                while x3 <= max_x:
+                    self.schedule_chunk_if_missing(x3, z3)
+                    x3 = x3 + 1
+                z3 = z3 + 1
+        elif dz < 0:
+            z4: i32 = new_z - half_grid
+            last_z2: i32 = old_z - half_grid - 1
+            while z4 <= last_z2:
+                x4: i32 = min_x
+                while x4 <= max_x:
+                    self.schedule_chunk_if_missing(x4, z4)
+                    x4 = x4 + 1
+                z4 = z4 + 1
 
     fun build_slot_target(self, slot: i32, chunk_x: i32, chunk_z: i32) -> i32:
         self.prepare_slot_target(slot, chunk_x, chunk_z)
@@ -651,10 +858,21 @@ attach TerrainWorld:
 
     fun relink_slot_target(self, chunk_x: i32, chunk_z: i32):
         self.relink_neighbors_around(chunk_x, chunk_z)
-        self.mark_dirty_chunk_at(chunk_x - 1, chunk_z)
-        self.mark_dirty_chunk_at(chunk_x + 1, chunk_z)
-        self.mark_dirty_chunk_at(chunk_x, chunk_z - 1)
-        self.mark_dirty_chunk_at(chunk_x, chunk_z + 1)
+        self.mark_stream_neighbor_dirty(chunk_x - 1, chunk_z)
+        self.mark_stream_neighbor_dirty(chunk_x + 1, chunk_z)
+        self.mark_stream_neighbor_dirty(chunk_x, chunk_z - 1)
+        self.mark_stream_neighbor_dirty(chunk_x, chunk_z + 1)
+
+    fun mark_stream_neighbor_dirty(self, chunk_x: i32, chunk_z: i32):
+        slot: i32 = self.find_chunk_coord(chunk_x, chunk_z)
+        if slot < 0:
+            return
+        # A pending chunk will receive its first mesh after every pending
+        # target has been generated and linked, so remeshing it twice is waste.
+        if self.pending_flags != 0:
+            if Memory.read_i32(self.pending_flags + slot * 4) != 0:
+                return
+        self.mark_dirty_slot(slot)
 
     fun generate_slot_blocks(self, slot: i32) -> i32:
         ptr: i64 = self.chunk_ptr_for_slot(slot)
@@ -690,6 +908,25 @@ attach TerrainWorld:
         origin_x: i32 = chunk_x * self.chunk_size
         origin_z: i32 = chunk_z * self.chunk_size
         chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
+
+        # Windows currently has real Dolet threads. Build against an immutable
+        # snapshot there; platforms without a thread handle use the bounded
+        # main-thread fallback below and remain correct.
+        if self.mesh_worker_thread_handle != 0:
+            if self.mesh_worker_state_ptr != 0:
+                if self.mesh_async_workspace_ptr != 0:
+                    state: AtomicI32 = self.mesh_worker_state_ptr as AtomicI32
+                    if state.load() == 0:
+                        snapshot: VoxelMeshSnapshot = VoxelMeshSnapshot.create(chunk)
+                        self.mesh_async_snapshot_ptr = snapshot as i64
+                        self.mesh_job_slot = slot
+                        self.mesh_job_face = 0
+                        self.mesh_job_face_count = 0
+                        self.mesh_job_source = source
+                        self.mesh_job_restart = 0
+                        state.store(1)
+                        return 1
+
         begin_result: i32 = chunk.begin_mesh_into(workspace)
         if begin_result < 0:
             return 0
@@ -720,16 +957,79 @@ attach TerrainWorld:
                 self.dirty_count = 0
                 self.dirty_cursor = 0
             self.stream_debug_dirty_uploads = self.stream_debug_dirty_uploads + 1
+        elif self.mesh_job_source == 3:
+            if self.urgent_flags != 0:
+                Memory.write_i32(self.urgent_flags + slot * 4, 0)
+            # The urgent build also satisfies any older seam-dirty request.
+            if self.dirty_flags != 0:
+                Memory.write_i32(self.dirty_flags + slot * 4, 0)
+            self.urgent_cursor = self.urgent_cursor + 1
+            if self.urgent_cursor >= self.urgent_count:
+                self.urgent_count = 0
+                self.urgent_cursor = 0
+            self.stream_debug_dirty_uploads = self.stream_debug_dirty_uploads + 1
+
+    fun cancel_mesh_job(self):
+        if self.mesh_async_snapshot_ptr != 0:
+            self.mesh_job_restart = 1
+            return
+        self.mesh_job_slot = -1
+        self.mesh_job_face = 0
+        self.mesh_job_face_count = 0
+        self.mesh_job_source = 0
+        self.mesh_job_restart = 0
 
     fun process_mesh_job(self) -> i32:
         if self.mesh_job_slot < 0:
             return 0
         ptr: i64 = self.chunk_ptr_for_slot(self.mesh_job_slot)
         if ptr == 0:
+            if self.mesh_async_snapshot_ptr != 0:
+                if self.mesh_worker_state_ptr != 0:
+                    missing_state: AtomicI32 = self.mesh_worker_state_ptr as AtomicI32
+                    if missing_state.load() != 3:
+                        return 0
+                    self.cleanup_async_mesh_snapshot()
+                    missing_state.store(0)
             self.finish_mesh_job_queue(self.mesh_job_slot)
             self.mesh_job_slot = -1
             self.mesh_job_source = 0
+            self.mesh_job_restart = 0
             return 0
+
+        if self.mesh_async_snapshot_ptr != 0:
+            if self.mesh_worker_state_ptr == 0:
+                return 0
+            state: AtomicI32 = self.mesh_worker_state_ptr as AtomicI32
+            if state.load() != 3:
+                return 0
+            if self.mesh_job_restart != 0:
+                self.cleanup_async_mesh_snapshot()
+                self.mesh_job_slot = -1
+                self.mesh_job_face = 0
+                self.mesh_job_face_count = 0
+                self.mesh_job_source = 0
+                self.mesh_job_restart = 0
+                state.store(0)
+                return 0
+            async_workspace: VoxelMeshWorkspace = self.mesh_async_workspace_ptr as VoxelMeshWorkspace
+            live_chunk: VoxelChunk = ptr as VoxelChunk
+            async_mesh_id: i32 = live_chunk.upload_workspace_mesh(async_workspace, self.mesh_job_face_count)
+            if async_mesh_id >= 0:
+                if self.grass_texture_id >= 0:
+                    Engine.bind_texture(async_mesh_id, self.grass_texture_id)
+            async_faces: i32 = live_chunk.last_face_count
+            async_slot: i32 = self.mesh_job_slot
+            self.finish_mesh_job_queue(async_slot)
+            self.cleanup_async_mesh_snapshot()
+            self.mesh_job_slot = -1
+            self.mesh_job_face = 0
+            self.mesh_job_face_count = 0
+            self.mesh_job_source = 0
+            self.mesh_job_restart = 0
+            state.store(0)
+            return async_faces
+
         if self.mesh_workspace_ptr == 0:
             return 0
         chunk: VoxelChunk = ptr as VoxelChunk
@@ -737,6 +1037,14 @@ attach TerrainWorld:
         if self.mesh_job_face < 6:
             self.mesh_job_face_count = chunk.build_mesh_face_into(workspace, self.mesh_job_face, self.mesh_job_face_count)
             self.mesh_job_face = self.mesh_job_face + 1
+            return 0
+
+        if self.mesh_job_restart != 0:
+            self.mesh_job_slot = -1
+            self.mesh_job_face = 0
+            self.mesh_job_face_count = 0
+            self.mesh_job_source = 0
+            self.mesh_job_restart = 0
             return 0
 
         mesh_id: i32 = chunk.upload_workspace_mesh(workspace, self.mesh_job_face_count)
@@ -750,6 +1058,7 @@ attach TerrainWorld:
         self.mesh_job_face = 0
         self.mesh_job_face_count = 0
         self.mesh_job_source = 0
+        self.mesh_job_restart = 0
         return faces
 
     fun upload_slot_mesh(self, slot: i32) -> i32:
@@ -798,12 +1107,33 @@ attach TerrainWorld:
             self.stream_debug_max_ms = 0.0
 
     fun process_dirty_meshes(self) -> i32:
-        if self.dirty_cursor >= self.dirty_count:
-            self.dirty_count = 0
-            self.dirty_cursor = 0
-            return 0
-        slot: i32 = Memory.read_i32(self.dirty_slots + self.dirty_cursor * 4)
-        self.start_mesh_job(slot, 2)
+        while self.dirty_cursor < self.dirty_count:
+            slot: i32 = Memory.read_i32(self.dirty_slots + self.dirty_cursor * 4)
+            if self.dirty_flags != 0:
+                if Memory.read_i32(self.dirty_flags + slot * 4) == 0:
+                    self.dirty_cursor = self.dirty_cursor + 1
+                else:
+                    self.start_mesh_job(slot, 2)
+                    return 0
+            else:
+                self.dirty_cursor = self.dirty_cursor + 1
+        self.dirty_count = 0
+        self.dirty_cursor = 0
+        return 0
+
+    fun process_urgent_meshes(self) -> i32:
+        while self.urgent_cursor < self.urgent_count:
+            slot: i32 = Memory.read_i32(self.urgent_slots + self.urgent_cursor * 4)
+            if self.urgent_flags != 0:
+                if Memory.read_i32(self.urgent_flags + slot * 4) == 0:
+                    self.urgent_cursor = self.urgent_cursor + 1
+                else:
+                    self.start_mesh_job(slot, 3)
+                    return 0
+            else:
+                self.urgent_cursor = self.urgent_cursor + 1
+        self.urgent_count = 0
+        self.urgent_cursor = 0
         return 0
 
     fun process_pending_stage(self) -> i32:
@@ -811,32 +1141,48 @@ attach TerrainWorld:
             self.pending_count = 0
             self.pending_cursor = 0
             return 0
+        # Batch phases: generate all targets, link all neighbors, then mesh.
+        # This prevents a freshly loaded row from remeshing itself repeatedly
+        # as each adjacent chunk arrives.
         idx: i32 = self.pending_cursor
-        slot: i32 = Memory.read_i32(self.pending_slots + idx * 4)
-        chunk_x: i32 = Memory.read_i32(self.pending_xs + idx * 4)
-        chunk_z: i32 = Memory.read_i32(self.pending_zs + idx * 4)
-        stage: i32 = 0
-        if self.pending_stages != 0:
-            stage = Memory.read_i32(self.pending_stages + idx * 4)
-
-        if stage == 0:
-            self.prepare_slot_target(slot, chunk_x, chunk_z)
-            if self.pending_stages != 0:
+        while idx < self.pending_count:
+            stage: i32 = Memory.read_i32(self.pending_stages + idx * 4)
+            if stage == 0:
+                slot: i32 = Memory.read_i32(self.pending_slots + idx * 4)
+                chunk_x: i32 = Memory.read_i32(self.pending_xs + idx * 4)
+                chunk_z: i32 = Memory.read_i32(self.pending_zs + idx * 4)
+                self.prepare_slot_target(slot, chunk_x, chunk_z)
                 Memory.write_i32(self.pending_stages + idx * 4, 1)
-            return 0
-        if stage == 1:
-            self.relink_slot_target(chunk_x, chunk_z)
-            if self.pending_stages != 0:
-                Memory.write_i32(self.pending_stages + idx * 4, 2)
-            return 0
+                return 0
+            idx = idx + 1
 
-        self.start_mesh_job(slot, 1)
+        idx = self.pending_cursor
+        while idx < self.pending_count:
+            stage2: i32 = Memory.read_i32(self.pending_stages + idx * 4)
+            if stage2 == 1:
+                chunk_x2: i32 = Memory.read_i32(self.pending_xs + idx * 4)
+                chunk_z2: i32 = Memory.read_i32(self.pending_zs + idx * 4)
+                self.relink_slot_target(chunk_x2, chunk_z2)
+                Memory.write_i32(self.pending_stages + idx * 4, 2)
+                return 0
+            idx = idx + 1
+
+        current_slot: i32 = Memory.read_i32(self.pending_slots + self.pending_cursor * 4)
+        self.start_mesh_job(current_slot, 1)
         return 0
 
     fun process_streaming(self) -> i32:
         start_time: f64 = engine_time_seconds()
         faces_total: i32 = 0
-        if self.mesh_job_slot >= 0:
+        if self.urgent_cursor < self.urgent_count:
+            if self.mesh_job_slot >= 0:
+                if self.mesh_job_source != 3:
+                    self.cancel_mesh_job()
+            if self.mesh_job_slot >= 0:
+                faces_total = self.process_mesh_job()
+            else:
+                faces_total = self.process_urgent_meshes()
+        elif self.mesh_job_slot >= 0:
             faces_total = self.process_mesh_job()
         elif self.pending_cursor < self.pending_count:
             faces_total = self.process_pending_stage()
@@ -985,6 +1331,7 @@ attach TerrainWorld:
         self.center_chunk_z = 0
         self.clear_pending()
         self.clear_dirty()
+        self.clear_urgent()
         self.stream_debug_frames = 0
         self.stream_debug_generates = 0
         self.stream_debug_uploads = 0
@@ -1001,7 +1348,9 @@ attach TerrainWorld:
         if new_center_x == self.center_chunk_x:
             if new_center_z == self.center_chunk_z:
                 return self.process_streaming()
+        old_center_x: i32 = self.center_chunk_x
+        old_center_z: i32 = self.center_chunk_z
         self.center_chunk_x = new_center_x
         self.center_chunk_z = new_center_z
-        self.schedule_missing_chunks()
+        self.schedule_shifted_chunks(old_center_x, old_center_z, new_center_x, new_center_z)
         return self.process_streaming()
