@@ -185,6 +185,13 @@ fun terrain_positive_mod(value: i32, divisor: i32) -> i32:
         result = result + divisor
     return result
 
+fun terrain_lod_step(lod: i32) -> i32:
+    if lod >= 2:
+        return 8
+    if lod == 1:
+        return 4
+    return 1
+
 @heap struct TerrainWorld:
     chunks: i64 = 0
     chunk_world_xs: i64 = 0
@@ -203,6 +210,7 @@ fun terrain_positive_mod(value: i32, divisor: i32) -> i32:
     mesh_job_face: i32 = 0
     mesh_job_face_count: i32 = 0
     mesh_job_source: i32 = 0
+    mesh_job_lod: i32 = 0
     mesh_job_restart: i32 = 0
     mesh_async_snapshot_ptr: i64 = 0
     mesh_async_workspace_ptr: i64 = 0
@@ -265,12 +273,18 @@ fun terrain_mesh_worker_loop(world_addr: i64):
                     workspace: VoxelMeshWorkspace = world.mesh_async_workspace_ptr as VoxelMeshWorkspace
                     if snapshot.chunk_ptr != 0:
                         chunk: VoxelChunk = snapshot.chunk_ptr as VoxelChunk
-                        begin_result: i32 = chunk.begin_mesh_into(workspace)
-                        if begin_result > 0:
-                            face: i32 = 0
-                            while face < 6:
-                                face_count = chunk.build_mesh_face_into(workspace, face, face_count)
-                                face = face + 1
+                        if world.mesh_job_lod <= 0:
+                            begin_result: i32 = chunk.begin_mesh_into(workspace)
+                            if begin_result > 0:
+                                face: i32 = 0
+                                while face < 6:
+                                    face_count = chunk.build_mesh_face_into(workspace, face, face_count)
+                                    face = face + 1
+                        else:
+                            lod_step: i32 = terrain_lod_step(world.mesh_job_lod)
+                            lod_begin: i32 = chunk.begin_lod_mesh_into(workspace, lod_step)
+                            if lod_begin > 0:
+                                face_count = chunk.build_lod_mesh_into(workspace, lod_step)
             world.mesh_job_face_count = face_count
             state.store(3)
         else:
@@ -313,6 +327,7 @@ attach TerrainWorld:
         world.mesh_job_face = 0
         world.mesh_job_face_count = 0
         world.mesh_job_source = 0
+        world.mesh_job_lod = 0
         world.mesh_job_restart = 0
         world.mesh_async_snapshot_ptr = 0
         async_workspace: VoxelMeshWorkspace = VoxelMeshWorkspace.create()
@@ -705,8 +720,26 @@ attach TerrainWorld:
         if slot >= self.chunk_count:
             return
         if self.pending_count >= self.chunk_count:
-            return
+            # A toroidal slot can already be pending for the cache row that
+            # just moved out. Retarget that entry in place instead of dropping
+            # the new row while the startup/preload queue is full.
+            if Memory.read_i32(self.pending_flags + slot * 4) == 0:
+                return
         if Memory.read_i32(self.pending_flags + slot * 4) != 0:
+            pending_i: i32 = self.pending_cursor
+            while pending_i < self.pending_count:
+                if Memory.read_i32(self.pending_slots + pending_i * 4) == slot:
+                    old_x: i32 = Memory.read_i32(self.pending_xs + pending_i * 4)
+                    old_z: i32 = Memory.read_i32(self.pending_zs + pending_i * 4)
+                    if old_x != chunk_x or old_z != chunk_z:
+                        Memory.write_i32(self.pending_xs + pending_i * 4, chunk_x)
+                        Memory.write_i32(self.pending_zs + pending_i * 4, chunk_z)
+                        if self.pending_stages != 0:
+                            Memory.write_i32(self.pending_stages + pending_i * 4, 0)
+                        if self.mesh_job_slot == slot:
+                            self.mesh_job_restart = 1
+                    return
+                pending_i = pending_i + 1
             return
         # The toroidal slot may still carry stale seam/edit work for the chunk
         # that just left the cache. The new target supersedes that work.
@@ -799,8 +832,9 @@ attach TerrainWorld:
         if self.pending_count == 0:
             self.clear_pending()
         half_grid: i32 = self.grid_size / 2
+        preload_radius: i32 = half_grid + self.cache_margin
         radius: i32 = 0
-        while radius <= half_grid:
+        while radius <= preload_radius:
             if radius == 0:
                 self.schedule_chunk_if_missing(self.center_chunk_x, self.center_chunk_z)
             else:
@@ -831,8 +865,11 @@ attach TerrainWorld:
 
     # Normal movement only exposes one row or column. Scheduling only that
     # strip avoids the old O(visibleChunks * poolChunks) boundary-frame scan.
+    # The strip is placed at the cache edge, not the visible edge, giving the
+    # worker two full chunks of lead time before terrain reaches the camera.
     fun schedule_shifted_chunks(self, old_x: i32, old_z: i32, new_x: i32, new_z: i32):
         half_grid: i32 = self.grid_size / 2
+        preload_radius: i32 = half_grid + self.cache_margin
         dx: i32 = new_x - old_x
         dz: i32 = new_z - old_z
         abs_dx: i32 = dx
@@ -841,15 +878,15 @@ attach TerrainWorld:
             abs_dx = 0 - abs_dx
         if abs_dz < 0:
             abs_dz = 0 - abs_dz
-        if abs_dx >= self.grid_size or abs_dz >= self.grid_size:
+        if abs_dx >= self.pool_grid_size or abs_dz >= self.pool_grid_size:
             self.schedule_missing_chunks()
             return
 
-        min_z: i32 = new_z - half_grid
-        max_z: i32 = new_z + half_grid
+        min_z: i32 = new_z - preload_radius
+        max_z: i32 = new_z + preload_radius
         if dx > 0:
-            x: i32 = old_x + half_grid + 1
-            last_x: i32 = new_x + half_grid
+            x: i32 = old_x + preload_radius + 1
+            last_x: i32 = new_x + preload_radius
             while x <= last_x:
                 z: i32 = min_z
                 while z <= max_z:
@@ -857,8 +894,8 @@ attach TerrainWorld:
                     z = z + 1
                 x = x + 1
         elif dx < 0:
-            x2: i32 = new_x - half_grid
-            last_x2: i32 = old_x - half_grid - 1
+            x2: i32 = new_x - preload_radius
+            last_x2: i32 = old_x - preload_radius - 1
             while x2 <= last_x2:
                 z2: i32 = min_z
                 while z2 <= max_z:
@@ -866,11 +903,11 @@ attach TerrainWorld:
                     z2 = z2 + 1
                 x2 = x2 + 1
 
-        min_x: i32 = new_x - half_grid
-        max_x: i32 = new_x + half_grid
+        min_x: i32 = new_x - preload_radius
+        max_x: i32 = new_x + preload_radius
         if dz > 0:
-            z3: i32 = old_z + half_grid + 1
-            last_z: i32 = new_z + half_grid
+            z3: i32 = old_z + preload_radius + 1
+            last_z: i32 = new_z + preload_radius
             while z3 <= last_z:
                 x3: i32 = min_x
                 while x3 <= max_x:
@@ -878,8 +915,8 @@ attach TerrainWorld:
                     x3 = x3 + 1
                 z3 = z3 + 1
         elif dz < 0:
-            z4: i32 = new_z - half_grid
-            last_z2: i32 = old_z - half_grid - 1
+            z4: i32 = new_z - preload_radius
+            last_z2: i32 = old_z - preload_radius - 1
             while z4 <= last_z2:
                 x4: i32 = min_x
                 while x4 <= max_x:
@@ -905,6 +942,72 @@ attach TerrainWorld:
         self.visibility_next_refresh = 0.0
         return 1
 
+    fun raw_lod_for_coord(self, chunk_x: i32, chunk_z: i32) -> i32:
+        dx: i32 = chunk_x - self.center_chunk_x
+        dz: i32 = chunk_z - self.center_chunk_z
+        if dx < 0:
+            dx = 0 - dx
+        if dz < 0:
+            dz = 0 - dz
+        distance: i32 = dx
+        if dz > distance:
+            distance = dz
+        # The editable/player ring remains exact. The outer 74% of the view
+        # uses 4x and 8x surface steps, where projected voxel size is tiny.
+        if distance <= 6:
+            return 0
+        if distance <= 11:
+            return 1
+        return 2
+
+    fun hysteresis_lod_for_chunk(self, chunk: VoxelChunk, chunk_x: i32, chunk_z: i32) -> i32:
+        dx: i32 = chunk_x - self.center_chunk_x
+        dz: i32 = chunk_z - self.center_chunk_z
+        if dx < 0:
+            dx = 0 - dx
+        if dz < 0:
+            dz = 0 - dz
+        distance: i32 = dx
+        if dz > distance:
+            distance = dz
+        current: i32 = chunk.target_lod
+        if current <= 0:
+            if distance <= 7:
+                return 0
+        elif current == 1:
+            if distance <= 5:
+                return 0
+            if distance <= 12:
+                return 1
+        else:
+            if distance >= 10:
+                return 2
+        return self.raw_lod_for_coord(chunk_x, chunk_z)
+
+    # Re-evaluate only when the player crosses a chunk boundary. Changed rings
+    # join the existing background remesh queue, so there is no mass upload or
+    # main-thread spike when a new row enters the view.
+    fun schedule_lod_transitions(self):
+        slot: i32 = 0
+        while slot < self.chunk_count:
+            ptr: i64 = self.chunk_ptr_for_slot(slot)
+            if ptr != 0:
+                chunk: VoxelChunk = ptr as VoxelChunk
+                chunk_x: i32 = Memory.read_i32(self.chunk_world_xs + slot * 4)
+                chunk_z: i32 = Memory.read_i32(self.chunk_world_zs + slot * 4)
+                if self.coord_is_visible(chunk_x, chunk_z) == 1:
+                    next_lod: i32 = self.hysteresis_lod_for_chunk(chunk, chunk_x, chunk_z)
+                    if next_lod != chunk.target_lod:
+                        chunk.target_lod = next_lod
+                        if self.mesh_job_slot == slot:
+                            self.mesh_job_restart = 1
+                        pending: i32 = 0
+                        if self.pending_flags != 0:
+                            pending = Memory.read_i32(self.pending_flags + slot * 4)
+                        if pending == 0:
+                            self.mark_dirty_slot(slot)
+            slot = slot + 1
+
     fun relink_slot_target(self, chunk_x: i32, chunk_z: i32):
         self.relink_neighbors_around(chunk_x, chunk_z)
         self.mark_stream_neighbor_dirty(chunk_x - 1, chunk_z)
@@ -921,6 +1024,14 @@ attach TerrainWorld:
         if self.pending_flags != 0:
             if Memory.read_i32(self.pending_flags + slot * 4) != 0:
                 return
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr != 0:
+            chunk: VoxelChunk = ptr as VoxelChunk
+            # Surface LODs do not emit internal voxel side faces and their
+            # skirts already cover boundaries, so neighbor arrival cannot
+            # change their geometry.
+            if chunk.target_lod > 0:
+                return
         self.mark_dirty_slot(slot)
 
     fun generate_slot_blocks(self, slot: i32) -> i32:
@@ -934,6 +1045,7 @@ attach TerrainWorld:
         origin_z: i32 = chunk_z * self.chunk_size
         terrain_generate_chunk(chunk, self.seed, origin_x, origin_z)
         chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
+        chunk.target_lod = self.raw_lod_for_coord(chunk_x, chunk_z)
         return 1
 
     fun refresh_chunk_mesh_at(self, chunk_x: i32, chunk_z: i32) -> i32:
@@ -957,6 +1069,7 @@ attach TerrainWorld:
         origin_x: i32 = chunk_x * self.chunk_size
         origin_z: i32 = chunk_z * self.chunk_size
         chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
+        job_lod: i32 = chunk.target_lod
 
         # Windows currently has real Dolet threads. Build against an immutable
         # snapshot there; platforms without a thread handle use the bounded
@@ -979,17 +1092,23 @@ attach TerrainWorld:
                         self.mesh_job_face = 0
                         self.mesh_job_face_count = 0
                         self.mesh_job_source = source
+                        self.mesh_job_lod = job_lod
                         self.mesh_job_restart = 0
                         state.store(1)
                         return 1
 
-        begin_result: i32 = chunk.begin_mesh_into(workspace)
+        begin_result: i32 = 0
+        if job_lod <= 0:
+            begin_result = chunk.begin_mesh_into(workspace)
+        else:
+            begin_result = chunk.begin_lod_mesh_into(workspace, terrain_lod_step(job_lod))
         if begin_result < 0:
             return 0
         self.mesh_job_slot = slot
         self.mesh_job_face = 0
         self.mesh_job_face_count = 0
         self.mesh_job_source = source
+        self.mesh_job_lod = job_lod
         if begin_result == 0:
             self.mesh_job_face = 6
         return 1
@@ -1033,6 +1152,7 @@ attach TerrainWorld:
         self.mesh_job_face = 0
         self.mesh_job_face_count = 0
         self.mesh_job_source = 0
+        self.mesh_job_lod = 0
         self.mesh_job_restart = 0
 
     fun process_mesh_job(self) -> i32:
@@ -1050,6 +1170,7 @@ attach TerrainWorld:
             self.finish_mesh_job_queue(self.mesh_job_slot)
             self.mesh_job_slot = -1
             self.mesh_job_source = 0
+            self.mesh_job_lod = 0
             self.mesh_job_restart = 0
             return 0
 
@@ -1064,6 +1185,7 @@ attach TerrainWorld:
                 self.mesh_job_face = 0
                 self.mesh_job_face_count = 0
                 self.mesh_job_source = 0
+                self.mesh_job_lod = 0
                 self.mesh_job_restart = 0
                 state.store(0)
                 return 0
@@ -1071,6 +1193,7 @@ attach TerrainWorld:
             live_chunk: VoxelChunk = ptr as VoxelChunk
             async_mesh_id: i32 = live_chunk.upload_workspace_mesh(async_workspace, self.mesh_job_face_count)
             if async_mesh_id >= 0:
+                live_chunk.mesh_lod = self.mesh_job_lod
                 if self.grass_texture_id >= 0:
                     Engine.bind_texture(async_mesh_id, self.grass_texture_id)
             async_faces: i32 = live_chunk.last_face_count
@@ -1080,6 +1203,7 @@ attach TerrainWorld:
             self.mesh_job_face = 0
             self.mesh_job_face_count = 0
             self.mesh_job_source = 0
+            self.mesh_job_lod = 0
             self.mesh_job_restart = 0
             state.store(0)
             return async_faces
@@ -1089,8 +1213,12 @@ attach TerrainWorld:
         chunk: VoxelChunk = ptr as VoxelChunk
         workspace: VoxelMeshWorkspace = self.mesh_workspace_ptr as VoxelMeshWorkspace
         if self.mesh_job_face < 6:
-            self.mesh_job_face_count = chunk.build_mesh_face_into(workspace, self.mesh_job_face, self.mesh_job_face_count)
-            self.mesh_job_face = self.mesh_job_face + 1
+            if self.mesh_job_lod <= 0:
+                self.mesh_job_face_count = chunk.build_mesh_face_into(workspace, self.mesh_job_face, self.mesh_job_face_count)
+                self.mesh_job_face = self.mesh_job_face + 1
+            else:
+                self.mesh_job_face_count = chunk.build_lod_mesh_into(workspace, terrain_lod_step(self.mesh_job_lod))
+                self.mesh_job_face = 6
             return 0
 
         if self.mesh_job_restart != 0:
@@ -1098,11 +1226,13 @@ attach TerrainWorld:
             self.mesh_job_face = 0
             self.mesh_job_face_count = 0
             self.mesh_job_source = 0
+            self.mesh_job_lod = 0
             self.mesh_job_restart = 0
             return 0
 
         mesh_id: i32 = chunk.upload_workspace_mesh(workspace, self.mesh_job_face_count)
         if mesh_id >= 0:
+            chunk.mesh_lod = self.mesh_job_lod
             if self.grass_texture_id >= 0:
                 Engine.bind_texture(mesh_id, self.grass_texture_id)
         faces: i32 = chunk.last_face_count
@@ -1112,6 +1242,7 @@ attach TerrainWorld:
         self.mesh_job_face = 0
         self.mesh_job_face_count = 0
         self.mesh_job_source = 0
+        self.mesh_job_lod = 0
         self.mesh_job_restart = 0
         return faces
 
@@ -1128,9 +1259,17 @@ attach TerrainWorld:
         if self.mesh_workspace_ptr == 0:
             return 0
         workspace: VoxelMeshWorkspace = self.mesh_workspace_ptr as VoxelMeshWorkspace
-        mesh_id: i32 = chunk.upload_with_workspace(workspace)
+        mesh_id: i32 = -1
+        if chunk.target_lod <= 0:
+            mesh_id = chunk.upload_with_workspace(workspace)
+        else:
+            lod_step: i32 = terrain_lod_step(chunk.target_lod)
+            if chunk.begin_lod_mesh_into(workspace, lod_step) > 0:
+                lod_faces: i32 = chunk.build_lod_mesh_into(workspace, lod_step)
+                mesh_id = chunk.upload_workspace_mesh(workspace, lod_faces)
         if mesh_id < 0:
             return 0
+        chunk.mesh_lod = chunk.target_lod
         if self.grass_texture_id >= 0:
             Engine.bind_texture(mesh_id, self.grass_texture_id)
         return chunk.last_face_count
@@ -1438,4 +1577,5 @@ attach TerrainWorld:
         self.center_chunk_x = new_center_x
         self.center_chunk_z = new_center_z
         self.schedule_shifted_chunks(old_center_x, old_center_z, new_center_x, new_center_z)
+        self.schedule_lod_transitions()
         return self.process_streaming()
