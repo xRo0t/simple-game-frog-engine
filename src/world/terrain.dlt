@@ -245,6 +245,9 @@ fun terrain_lod_step(lod: i32) -> i32:
     visibility_eval_z: f32 = 0.0
     visibility_eval_yaw: f32 = 0.0
     visibility_eval_pitch: f32 = 0.0
+    # The CPU owns only streaming-ring membership. Per-frame view and
+    # occlusion decisions are delegated to Frog's GPU cull/HZB path.
+    gpu_visibility_enabled: i32 = 1
     occlusion_enabled: i32 = 1
     grass_texture_id: i32 = -1
     stream_debug_enabled: i32 = 0
@@ -364,6 +367,7 @@ attach TerrainWorld:
         world.visibility_cycle_active = 0
         world.visibility_dirty = 1
         world.visibility_next_refresh = 0.0
+        world.gpu_visibility_enabled = 1
         world.occlusion_enabled = 1
         world.grass_texture_id = -1
         world.stream_debug_enabled = 0
@@ -1442,9 +1446,13 @@ attach TerrainWorld:
             return
         now: f64 = engine_time_seconds()
         if self.visibility_cycle_active == 0:
-            if self.visibility_dirty == 0:
-                if now < self.visibility_next_refresh:
+            if self.gpu_visibility_enabled == 1:
+                if self.visibility_dirty == 0:
                     return
+            else:
+                if self.visibility_dirty == 0:
+                    if now < self.visibility_next_refresh:
+                        return
             self.visibility_cycle_active = 1
             self.visibility_cursor = 0
             self.visibility_eval_x = cam_x
@@ -1489,13 +1497,14 @@ attach TerrainWorld:
                     visible: i32 = self.coord_is_visible(chunk_x, chunk_z)
                     center_x: f32 = ((chunk_x * self.chunk_size) as f32) + ((self.chunk_size as f32) * 0.5)
                     center_z: f32 = ((chunk_z * self.chunk_size) as f32) + ((self.chunk_size as f32) * 0.5)
-                    if visible == 1:
-                        if relaxed_view == 0:
-                            visible = self.chunk_in_view_cone(eval_x, eval_z, fwd_x, fwd_z, center_x, center_z)
-                    if visible == 1:
-                        if relaxed_view == 0:
-                            if self.chunk_height_occluded(eval_x, eval_y, eval_z, center_x, center_z) == 1:
-                                visible = 0
+                    if self.gpu_visibility_enabled == 0:
+                        if visible == 1:
+                            if relaxed_view == 0:
+                                visible = self.chunk_in_view_cone(eval_x, eval_z, fwd_x, fwd_z, center_x, center_z)
+                        if visible == 1:
+                            if relaxed_view == 0:
+                                if self.chunk_height_occluded(eval_x, eval_y, eval_z, center_x, center_z) == 1:
+                                    visible = 0
                     chunk.set_render_visible(visible)
             processed = processed + 1
 
