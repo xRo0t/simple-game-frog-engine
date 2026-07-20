@@ -67,6 +67,10 @@ attach Engine:
         # moves registry growth out of gameplay and prevents capacity hitches
         # while background chunks become GPU resident.
         Engine.reserve_mesh_capacity(4096)
+        # Voxel chunks are frequently replaced while streaming. A shared
+        # 64 MiB/16 MiB page pair avoids one Vulkan allocation per chunk and
+        # lets all resident chunks reuse only a handful of GPU buffers.
+        Engine.reserve_dynamic_mesh_arena(67108864, 16777216)
 
         requested_present_mode: PresentMode = Engine.properties.present_mode()
         active_present_mode: PresentMode = Engine.properties.active_present_mode()

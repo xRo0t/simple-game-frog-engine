@@ -939,7 +939,7 @@ attach VoxelChunk:
         self.pos_y = y
         self.pos_z = z
         if self.mesh_id >= 0:
-            Engine.set_transform(self.mesh_id, self.pos_x, self.pos_y, self.pos_z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+            Engine.set_transform(self.mesh_id, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
 
     fun set_render_visible(self, visible: i32):
         next_visible: i32 = 1
@@ -1136,15 +1136,26 @@ attach VoxelChunk:
                 self.set_render_visible(0)
                 return self.mesh_id
             return -1
+        # Terrain is static between remeshes. Bake the chunk translation into
+        # vertex positions so all chunks can share one identity instance and
+        # Frog can submit every arena page as a single multi-draw batch.
+        bake_i: i32 = 0
+        while bake_i < mesh.vertex_count:
+            bake_off: i64 = (bake_i as i64) * (FROG_GPU_VERTEX_STRIDE as i64)
+            Memory.write_f32(mesh.vertices + bake_off, Memory.read_f32(mesh.vertices + bake_off) + self.pos_x)
+            Memory.write_f32(mesh.vertices + bake_off + 4, Memory.read_f32(mesh.vertices + bake_off + 4) + self.pos_y)
+            Memory.write_f32(mesh.vertices + bake_off + 8, Memory.read_f32(mesh.vertices + bake_off + 8) + self.pos_z)
+            bake_i = bake_i + 1
         if self.mesh_id >= 0:
-            next_mesh_id: i32 = Engine.replace_mesh_data(self.mesh_id, mesh)
+            next_mesh_id: i32 = Engine.replace_dynamic_mesh_data(self.mesh_id, mesh)
             if next_mesh_id >= 0:
                 self.mesh_id = next_mesh_id
         else:
-            self.mesh_id = Engine.upload_mesh_data(mesh)
+            self.mesh_id = Engine.upload_dynamic_mesh_data(mesh)
             self.render_visible = 1
         if self.mesh_id >= 0:
-            Engine.set_transform(self.mesh_id, self.pos_x, self.pos_y, self.pos_z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+            Engine.set_transform(self.mesh_id, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+            Engine.set_mesh_static_batch(self.mesh_id, 1)
         return self.mesh_id
 
     fun upload(self) -> i32:
