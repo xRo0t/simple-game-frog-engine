@@ -63,14 +63,14 @@ attach Engine:
         if Engine.start() == 0:
             return
 
-        # The 33x33 terrain plus cached ring stays below this. Reserving once
+        # Distance 32 uses a 65x65 visible terrain plus a cached ring.
         # moves registry growth out of gameplay and prevents capacity hitches
         # while background chunks become GPU resident.
-        Engine.reserve_mesh_capacity(4096)
+        Engine.reserve_mesh_capacity(8192)
         # Voxel chunks are frequently replaced while streaming. A shared
-        # 64 MiB/16 MiB page pair avoids one Vulkan allocation per chunk and
-        # lets all resident chunks reuse only a handful of GPU buffers.
-        Engine.reserve_dynamic_mesh_arena(67108864, 16777216)
+        # Distance 32 needs a larger first page. Reserving 128 MiB/32 MiB
+        # upfront keeps the second Vulkan page allocation out of gameplay.
+        Engine.reserve_dynamic_mesh_arena(134217728, 33554432)
 
         requested_present_mode: PresentMode = Engine.properties.present_mode()
         active_present_mode: PresentMode = Engine.properties.active_present_mode()
@@ -100,17 +100,35 @@ attach Engine:
 
             # Drive the player from input, then propagate to children.
             update_player(player, terrain, dt)
-            terrain.update_block_edit(player.pos_x, player.pos_y, player.pos_z, player.yaw, player.pitch, player.radius, player.height, player.eye_height)
+            if player.spectator_changed == 1:
+                if gun.held == 1:
+                    if player.spectator_mode == 1:
+                        Engine.set_instance_visible(gun.gun_mesh_id, 0)
+                    else:
+                        Engine.set_instance_visible(gun.gun_mesh_id, 1)
+                player.spectator_changed = 0
+            if player.spectator_mode == 0:
+                terrain.update_block_edit(player.pos_x, player.pos_y, player.pos_z, player.yaw, player.pitch, player.radius, player.height, player.eye_height)
+            else:
+                # Consume edge state without allowing spectator clicks to
+                # mutate terrain while inspecting underground geometry.
+                terrain.edit_left_down = Input.key_down(MOUSE_LEFT)
+                terrain.edit_right_down = Input.key_down(MOUSE_RIGHT)
             earth.update_terrain(player.pos_x, player.pos_y, player.pos_z, player.yaw, player.pitch)
             sync_camera_to_player(camera, player)
-            update_gun_pickup(gun, player)
-            if gun.held == 1:
-                update_gun_sway(gun, player, dt)
-                update_gun_ads(gun, dt)
-                update_gun_player(gun, player)
+            if player.spectator_mode == 0:
+                update_gun_pickup(gun, player)
+                if gun.held == 1:
+                    update_gun_sway(gun, player, dt)
+                    update_gun_ads(gun, dt)
+                    update_gun_player(gun, player)
+                else:
+                    update_gun_drop(gun, dt)
+                bullet_try_fire(bullets, player, gun.held)
             else:
-                update_gun_drop(gun, dt)
-            bullet_try_fire(bullets, player, gun.held)
+                bullet_try_fire(bullets, player, 0)
+                if gun.held == 0:
+                    update_gun_drop(gun, dt)
             update_bullets(bullets, dt)
             update_sun_debug_controls(dt)
 

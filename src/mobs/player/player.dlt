@@ -27,6 +27,14 @@
     look_sensitivity: f32 = 0.07
     captured: i32 = 1
     look_ready: i32 = 0
+    spectator_mode: i32 = 0
+    spectator_toggle_down: i32 = 0
+    spectator_changed: i32 = 0
+    spectator_return_x: f32 = 0.0
+    spectator_return_y: f32 = 0.0
+    spectator_return_z: f32 = 0.0
+    spectator_speed: f32 = 18.0
+    spectator_fast_speed: f32 = 54.0
 
 attach PlayerNode:
 
@@ -52,6 +60,14 @@ fun player_node_create(px: f32, py: f32, pz: f32) -> PlayerNode:
     node.look_sensitivity = 0.07
     node.captured = 1
     node.look_ready = 0
+    node.spectator_mode = 0
+    node.spectator_toggle_down = 0
+    node.spectator_changed = 0
+    node.spectator_return_x = px
+    node.spectator_return_y = py
+    node.spectator_return_z = pz
+    node.spectator_speed = 18.0
+    node.spectator_fast_speed = 54.0
     return node
 
 fun spawn_player(x: f32, y: f32, z: f32) -> PlayerNode:

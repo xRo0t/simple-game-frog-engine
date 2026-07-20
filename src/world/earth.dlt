@@ -5,6 +5,8 @@
 
 import world.terrain
 
+imm TERRAIN_VIEW_DISTANCE_CHUNKS: i32 = 32
+
 @heap struct EarthNode:
     id: i32 = -1
     name: str = ""
@@ -104,7 +106,8 @@ attach EarthNode:
         self.scale_z = self.ground_size
         Engine.set_transform(self.ground_id, self.pos_x, self.pos_y, self.pos_z, self.rot_x, self.rot_y, self.rot_z, self.scale_x, self.scale_y, self.scale_z)
 
-        terrain: TerrainWorld = TerrainWorld.create(33, 40, 32)
+        terrain_grid_size: i32 = TERRAIN_VIEW_DISTANCE_CHUNKS * 2 + 1
+        terrain: TerrainWorld = TerrainWorld.create(terrain_grid_size, 40, 32)
         terrain_faces: i32 = terrain.generate_world(1337)
         self.terrain_world_ptr = terrain as i64
         print("Voxel terrain faces " + Convert.i32_to_str(terrain_faces))
