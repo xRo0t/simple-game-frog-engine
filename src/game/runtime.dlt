@@ -63,6 +63,11 @@ attach Engine:
         if Engine.start() == 0:
             return
 
+        # The 33x33 terrain plus cached ring stays below this. Reserving once
+        # moves registry growth out of gameplay and prevents capacity hitches
+        # while background chunks become GPU resident.
+        Engine.reserve_mesh_capacity(4096)
+
         requested_present_mode: PresentMode = Engine.properties.present_mode()
         active_present_mode: PresentMode = Engine.properties.active_present_mode()
         requested_present_mode_name: str = PresentMode.name(requested_present_mode)

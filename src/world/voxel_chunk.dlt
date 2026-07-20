@@ -107,6 +107,7 @@ attach VoxelMeshWorkspace:
     palette: i64 = 0
     mesh_id: i32 = -1
     last_face_count: i32 = 0
+    render_visible: i32 = 1
     pos_x: f32 = 0.0
     pos_y: f32 = 0.0
     pos_z: f32 = 0.0
@@ -539,28 +540,15 @@ fun voxel_write_greedy_quad(chunk: VoxelChunk, vertices: i64, indices: i64, face
         return voxel_write_quad(chunk, vertices, indices, face_index, u0, v0, slice, u1, v1, slice + 1, face, block_id)
     return voxel_write_quad(chunk, vertices, indices, face_index, u0, v0, slice, u1, v1, slice + 1, face, block_id)
 
-fun voxel_greedy_mark_rect(used: i64, u_count: i32, u0: i32, v0: i32, width: i32, height: i32):
+fun voxel_greedy_clear_rect(mask: i64, u_count: i32, u0: i32, v0: i32, width: i32, height: i32):
     vv: i32 = 0
     while vv < height:
         uu: i32 = 0
         while uu < width:
             mi: i32 = (v0 + vv) * u_count + u0 + uu
-            Memory.write_i32(used + mi * 4, 1)
+            Memory.write_i32(mask + mi * 4, 0)
             uu = uu + 1
         vv = vv + 1
-
-fun voxel_greedy_can_grow(chunk: VoxelChunk, used: i64, face: i32, slice: i32, u_count: i32, u0: i32, v: i32, width: i32, block_id: i32, ao_key: i32) -> i32:
-    uu: i32 = 0
-    while uu < width:
-        mi: i32 = v * u_count + u0 + uu
-        if Memory.read_i32(used + mi * 4) != 0:
-            return 0
-        if voxel_face_block_at(chunk, face, u0 + uu, v, slice) != block_id:
-            return 0
-        if voxel_face_ao_key(chunk, face, u0 + uu, v, slice) != ao_key:
-            return 0
-        uu = uu + 1
-    return 1
 
 fun voxel_greedy_face_mask_size(chunk: VoxelChunk, face: i32) -> i32:
     if face == 0 or face == 1:
@@ -597,42 +585,58 @@ fun voxel_write_greedy_face_with_mask(chunk: VoxelChunk, vertices: i64, indices:
 
     slice: i32 = 0
     while slice < slice_count:
-        Memory.set(used, 0, used_size * 4)
+        # Build a packed face mask once. Low 8 bits contain block_id and the
+        # remaining bits contain the four AO levels plus a nonzero sentinel. Rectangle growth then
+        # performs only contiguous integer comparisons instead of repeatedly
+        # querying neighbors and recomputing AO for the same cells.
         v: i32 = 0
         while v < v_count:
             u: i32 = 0
             while u < u_count:
                 mask_idx: i32 = v * u_count + u
-                if Memory.read_i32(used + mask_idx * 4) != 0:
+                block_for_mask: i32 = voxel_face_block_at(chunk, face, u, v, slice)
+                packed: i32 = 0
+                if block_for_mask != BlockId.air():
+                    ao_for_mask: i32 = voxel_face_ao_key(chunk, face, u, v, slice)
+                    packed = block_for_mask | ((ao_for_mask + 1) << 8)
+                Memory.write_i32(used + mask_idx * 4, packed)
+                u = u + 1
+            v = v + 1
+
+        v = 0
+        while v < v_count:
+            u = 0
+            while u < u_count:
+                mask_idx = v * u_count + u
+                packed_key: i32 = Memory.read_i32(used + mask_idx * 4)
+                if packed_key == 0:
                     u = u + 1
                 else:
-                    block_id: i32 = voxel_face_block_at(chunk, face, u, v, slice)
-                    if block_id == BlockId.air():
-                        u = u + 1
-                    else:
-                        ao_key: i32 = voxel_face_ao_key(chunk, face, u, v, slice)
-                        width: i32 = 1
-                        while u + width < u_count:
-                            next_idx: i32 = v * u_count + u + width
-                            if Memory.read_i32(used + next_idx * 4) != 0:
-                                break
-                            if voxel_face_block_at(chunk, face, u + width, v, slice) != block_id:
-                                break
-                            if voxel_face_ao_key(chunk, face, u + width, v, slice) != ao_key:
-                                break
-                            width = width + 1
+                    block_id: i32 = packed_key & 255
+                    width: i32 = 1
+                    while u + width < u_count:
+                        next_idx: i32 = v * u_count + u + width
+                        if Memory.read_i32(used + next_idx * 4) != packed_key:
+                            break
+                        width = width + 1
 
-                        height: i32 = 1
-                        can_grow: i32 = 1
-                        while v + height < v_count:
-                            can_grow = voxel_greedy_can_grow(chunk, used, face, slice, u_count, u, v + height, width, block_id, ao_key)
-                            if can_grow == 0:
+                    height: i32 = 1
+                    can_grow: i32 = 1
+                    while v + height < v_count:
+                        uu: i32 = 0
+                        while uu < width:
+                            grow_idx: i32 = (v + height) * u_count + u + uu
+                            if Memory.read_i32(used + grow_idx * 4) != packed_key:
+                                can_grow = 0
                                 break
-                            height = height + 1
+                            uu = uu + 1
+                        if can_grow == 0:
+                            break
+                        height = height + 1
 
-                        voxel_greedy_mark_rect(used, u_count, u, v, width, height)
-                        face_index = voxel_write_greedy_quad(chunk, vertices, indices, face_index, face, slice, u, v, u + width, v + height, block_id)
-                        u = u + width
+                    voxel_greedy_clear_rect(used, u_count, u, v, width, height)
+                    face_index = voxel_write_greedy_quad(chunk, vertices, indices, face_index, face, slice, u, v, u + width, v + height, block_id)
+                    u = u + width
             v = v + 1
         slice = slice + 1
 
@@ -668,6 +672,7 @@ attach VoxelChunk:
         chunk.palette = palette_data
         chunk.mesh_id = -1
         chunk.last_face_count = 0
+        chunk.render_visible = 1
         chunk.pos_x = 0.0
         chunk.pos_y = 0.0
         chunk.pos_z = 0.0
@@ -802,6 +807,64 @@ attach VoxelChunk:
                 Memory.set(clone.blocks, 0, total_bytes)
         return clone
 
+    # Refill an already allocated immutable snapshot without allocating again.
+    # The terrain worker owns the destination while this runs on the render
+    # thread, before the worker state is published as ready.
+    fun copy_blocks_from(self, source: VoxelChunk) -> i32:
+        if self.blocks == 0:
+            return 0
+        if source.blocks == 0:
+            return 0
+        if self.size_x != source.size_x:
+            return 0
+        if self.size_y != source.size_y:
+            return 0
+        if self.size_z != source.size_z:
+            return 0
+        total_bytes: i64 = (self.size_x as i64) * (self.size_y as i64) * (self.size_z as i64) * 4
+        Memory.copy(self.blocks, source.blocks, total_bytes)
+        return 1
+
+    # Neighbor chunks are consulted only at the shared boundary by face
+    # visibility and AO. Refreshing that one plane avoids copying four entire
+    # 40x32x40 chunks for every mesh request.
+    fun copy_boundary_from(self, source: VoxelChunk, face: i32) -> i32:
+        if self.blocks == 0:
+            return 0
+        if source.blocks == 0:
+            return 0
+        if self.size_x != source.size_x:
+            return 0
+        if self.size_y != source.size_y:
+            return 0
+        if self.size_z != source.size_z:
+            return 0
+        if face == 0 or face == 1:
+            x: i32 = 0
+            if face == 0:
+                x = self.size_x - 1
+            y: i32 = 0
+            while y < self.size_y:
+                z: i32 = 0
+                while z < self.size_z:
+                    self.set(x, y, z, source.get(x, y, z))
+                    z = z + 1
+                y = y + 1
+            return 1
+        if face == 4 or face == 5:
+            z2: i32 = 0
+            if face == 4:
+                z2 = self.size_z - 1
+            y2: i32 = 0
+            while y2 < self.size_y:
+                x2: i32 = 0
+                while x2 < self.size_x:
+                    self.set(x2, y2, z2, source.get(x2, y2, z2))
+                    x2 = x2 + 1
+                y2 = y2 + 1
+            return 1
+        return self.copy_blocks_from(source)
+
     fun clone_for_meshing(self) -> VoxelChunk:
         clone: VoxelChunk = self.clone_blocks_only()
         clone.pos_x = self.pos_x
@@ -877,6 +940,16 @@ attach VoxelChunk:
         self.pos_z = z
         if self.mesh_id >= 0:
             Engine.set_transform(self.mesh_id, self.pos_x, self.pos_y, self.pos_z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+
+    fun set_render_visible(self, visible: i32):
+        next_visible: i32 = 1
+        if visible == 0:
+            next_visible = 0
+        if self.render_visible == next_visible:
+            return
+        self.render_visible = next_visible
+        if self.mesh_id >= 0:
+            Engine.set_instance_visible(self.mesh_id, next_visible)
 
     fun face_visible(self, x: i32, y: i32, z: i32) -> i32:
         if self.in_bounds(x, y, z) == 0:
@@ -1060,7 +1133,7 @@ attach VoxelChunk:
     fun upload_built_mesh(self, mesh: GpuMeshData) -> i32:
         if mesh.vertices == 0:
             if self.mesh_id >= 0:
-                Engine.set_instance_visible(self.mesh_id, 0)
+                self.set_render_visible(0)
                 return self.mesh_id
             return -1
         if self.mesh_id >= 0:
@@ -1069,6 +1142,7 @@ attach VoxelChunk:
                 self.mesh_id = next_mesh_id
         else:
             self.mesh_id = Engine.upload_mesh_data(mesh)
+            self.render_visible = 1
         if self.mesh_id >= 0:
             Engine.set_transform(self.mesh_id, self.pos_x, self.pos_y, self.pos_z, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
         return self.mesh_id
@@ -1092,6 +1166,18 @@ fun voxel_clone_neighbor_blocks(ptr: i64) -> i64:
     source: VoxelChunk = ptr as VoxelChunk
     clone: VoxelChunk = source.clone_blocks_only()
     return clone as i64
+
+fun voxel_refresh_snapshot_neighbor(existing_ptr: i64, source_ptr: i64, face: i32) -> i64:
+    if source_ptr == 0:
+        return existing_ptr
+    source: VoxelChunk = source_ptr as VoxelChunk
+    if existing_ptr == 0:
+        return voxel_clone_neighbor_blocks(source_ptr)
+    existing: VoxelChunk = existing_ptr as VoxelChunk
+    if existing.copy_boundary_from(source, face) == 0:
+        existing.destroy()
+        return voxel_clone_neighbor_blocks(source_ptr)
+    return existing_ptr
 
 fun voxel_destroy_snapshot_chunk(ptr: i64):
     if ptr == 0:
@@ -1118,6 +1204,49 @@ attach VoxelMeshSnapshot:
         root.set_neighbor_ptr(4, snapshot.neg_z_ptr)
         root.set_neighbor_ptr(5, snapshot.pos_z_ptr)
         return snapshot
+
+    fun refresh(self, source: VoxelChunk) -> i32:
+        if self.chunk_ptr == 0:
+            return 0
+        root: VoxelChunk = self.chunk_ptr as VoxelChunk
+        if root.copy_blocks_from(source) == 0:
+            return 0
+        root.pos_x = source.pos_x
+        root.pos_y = source.pos_y
+        root.pos_z = source.pos_z
+
+        self.neg_x_ptr = voxel_refresh_snapshot_neighbor(self.neg_x_ptr, source.neighbor_neg_x_ptr, 0)
+        self.pos_x_ptr = voxel_refresh_snapshot_neighbor(self.pos_x_ptr, source.neighbor_pos_x_ptr, 1)
+        self.neg_y_ptr = voxel_refresh_snapshot_neighbor(self.neg_y_ptr, source.neighbor_neg_y_ptr, 2)
+        self.pos_y_ptr = voxel_refresh_snapshot_neighbor(self.pos_y_ptr, source.neighbor_pos_y_ptr, 3)
+        self.neg_z_ptr = voxel_refresh_snapshot_neighbor(self.neg_z_ptr, source.neighbor_neg_z_ptr, 4)
+        self.pos_z_ptr = voxel_refresh_snapshot_neighbor(self.pos_z_ptr, source.neighbor_pos_z_ptr, 5)
+
+        if source.neighbor_neg_x_ptr != 0:
+            root.set_neighbor_ptr(0, self.neg_x_ptr)
+        else:
+            root.set_neighbor_ptr(0, 0)
+        if source.neighbor_pos_x_ptr != 0:
+            root.set_neighbor_ptr(1, self.pos_x_ptr)
+        else:
+            root.set_neighbor_ptr(1, 0)
+        if source.neighbor_neg_y_ptr != 0:
+            root.set_neighbor_ptr(2, self.neg_y_ptr)
+        else:
+            root.set_neighbor_ptr(2, 0)
+        if source.neighbor_pos_y_ptr != 0:
+            root.set_neighbor_ptr(3, self.pos_y_ptr)
+        else:
+            root.set_neighbor_ptr(3, 0)
+        if source.neighbor_neg_z_ptr != 0:
+            root.set_neighbor_ptr(4, self.neg_z_ptr)
+        else:
+            root.set_neighbor_ptr(4, 0)
+        if source.neighbor_pos_z_ptr != 0:
+            root.set_neighbor_ptr(5, self.pos_z_ptr)
+        else:
+            root.set_neighbor_ptr(5, 0)
+        return 1
 
     fun destroy(self):
         voxel_destroy_snapshot_chunk(self.chunk_ptr)

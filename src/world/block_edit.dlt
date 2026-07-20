@@ -91,41 +91,92 @@ attach TerrainWorld:
 
     fun raycast_blocks(self, origin_x: f32, origin_y: f32, origin_z: f32, dir_x: f32, dir_y: f32, dir_z: f32, max_dist: f32) -> BlockHit:
         hit: BlockHit = BlockHit()
-        step_dist: f32 = 0.05
+        bx: i32 = terrain_floor_coord(origin_x)
+        by: i32 = terrain_floor_coord(origin_y)
+        bz: i32 = terrain_floor_coord(origin_z)
+        last_x: i32 = bx
+        last_y: i32 = by
+        last_z: i32 = bz
+
+        if self.is_solid_world(bx, by, bz) == 1:
+            hit.found = 1
+            hit.block_x = bx
+            hit.block_y = by
+            hit.block_z = bz
+            hit.place_x = bx
+            hit.place_y = by
+            hit.place_z = bz
+            return hit
+
+        step_x: i32 = 0
+        step_y: i32 = 0
+        step_z: i32 = 0
+        t_delta_x: f32 = 1000000000.0
+        t_delta_y: f32 = 1000000000.0
+        t_delta_z: f32 = 1000000000.0
+        t_max_x: f32 = 1000000000.0
+        t_max_y: f32 = 1000000000.0
+        t_max_z: f32 = 1000000000.0
+
+        if dir_x > 0.000001:
+            step_x = 1
+            t_delta_x = 1.0 / dir_x
+            t_max_x = (((bx + 1) as f32) - origin_x) / dir_x
+        elif dir_x < 0.0 - 0.000001:
+            step_x = 0 - 1
+            t_delta_x = 0.0 - (1.0 / dir_x)
+            t_max_x = (origin_x - (bx as f32)) / (0.0 - dir_x)
+        if dir_y > 0.000001:
+            step_y = 1
+            t_delta_y = 1.0 / dir_y
+            t_max_y = (((by + 1) as f32) - origin_y) / dir_y
+        elif dir_y < 0.0 - 0.000001:
+            step_y = 0 - 1
+            t_delta_y = 0.0 - (1.0 / dir_y)
+            t_max_y = (origin_y - (by as f32)) / (0.0 - dir_y)
+        if dir_z > 0.000001:
+            step_z = 1
+            t_delta_z = 1.0 / dir_z
+            t_max_z = (((bz + 1) as f32) - origin_z) / dir_z
+        elif dir_z < 0.0 - 0.000001:
+            step_z = 0 - 1
+            t_delta_z = 0.0 - (1.0 / dir_z)
+            t_max_z = (origin_z - (bz as f32)) / (0.0 - dir_z)
+
         t: f32 = 0.0
-        last_empty: i32 = 0
-        last_x: i32 = terrain_floor_coord(origin_x)
-        last_y: i32 = terrain_floor_coord(origin_y)
-        last_z: i32 = terrain_floor_coord(origin_z)
-
         while t <= max_dist:
-            sx: f32 = origin_x + dir_x * t
-            sy: f32 = origin_y + dir_y * t
-            sz: f32 = origin_z + dir_z * t
-            bx: i32 = terrain_floor_coord(sx)
-            by: i32 = terrain_floor_coord(sy)
-            bz: i32 = terrain_floor_coord(sz)
+            last_x = bx
+            last_y = by
+            last_z = bz
+            if t_max_x <= t_max_y:
+                if t_max_x <= t_max_z:
+                    bx = bx + step_x
+                    t = t_max_x
+                    t_max_x = t_max_x + t_delta_x
+                else:
+                    bz = bz + step_z
+                    t = t_max_z
+                    t_max_z = t_max_z + t_delta_z
+            elif t_max_y <= t_max_z:
+                by = by + step_y
+                t = t_max_y
+                t_max_y = t_max_y + t_delta_y
+            else:
+                bz = bz + step_z
+                t = t_max_z
+                t_max_z = t_max_z + t_delta_z
 
+            if t > max_dist:
+                break
             if self.is_solid_world(bx, by, bz) == 1:
                 hit.found = 1
                 hit.block_x = bx
                 hit.block_y = by
                 hit.block_z = bz
-                if last_empty == 1:
-                    hit.place_x = last_x
-                    hit.place_y = last_y
-                    hit.place_z = last_z
-                else:
-                    hit.place_x = bx
-                    hit.place_y = by
-                    hit.place_z = bz
+                hit.place_x = last_x
+                hit.place_y = last_y
+                hit.place_z = last_z
                 return hit
-
-            last_empty = 1
-            last_x = bx
-            last_y = by
-            last_z = bz
-            t = t + step_dist
         return hit
 
     fun update_block_edit(self, player_x: f32, player_y: f32, player_z: f32, yaw: f32, pitch: f32, radius: f32, height: f32, eye_height: f32):

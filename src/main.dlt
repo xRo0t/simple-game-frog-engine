@@ -62,7 +62,7 @@ sky.add_object(day_object)
 sky.add_object(night_object)
 sky.add_object(stars)
 env.set_sky(sky)
-env.set_fog(Fog.view_distance(sky.fog_color(), 450.0))
+env.set_fog(Fog.view_distance(sky.fog_color(), 620.0))
 scene.set_environment(env)
 
 player_actor: Node3D = Node3D.create("Player")

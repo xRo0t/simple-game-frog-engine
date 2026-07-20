@@ -177,6 +177,14 @@ fun terrain_abs_f32(v: f32) -> f32:
         return 0.0 - v
     return v
 
+fun terrain_positive_mod(value: i32, divisor: i32) -> i32:
+    if divisor <= 0:
+        return 0
+    result: i32 = value % divisor
+    if result < 0:
+        result = result + divisor
+    return result
+
 @heap struct TerrainWorld:
     chunks: i64 = 0
     chunk_world_xs: i64 = 0
@@ -221,6 +229,14 @@ fun terrain_abs_f32(v: f32) -> f32:
     urgent_cursor: i32 = 0
     visibility_cursor: i32 = 0
     visibility_budget: i32 = 96
+    visibility_cycle_active: i32 = 0
+    visibility_dirty: i32 = 1
+    visibility_next_refresh: f64 = 0.0
+    visibility_eval_x: f32 = 0.0
+    visibility_eval_y: f32 = 0.0
+    visibility_eval_z: f32 = 0.0
+    visibility_eval_yaw: f32 = 0.0
+    visibility_eval_pitch: f32 = 0.0
     occlusion_enabled: i32 = 1
     grass_texture_id: i32 = -1
     stream_debug_enabled: i32 = 0
@@ -327,7 +343,10 @@ attach TerrainWorld:
         world.urgent_count = 0
         world.urgent_cursor = 0
         world.visibility_cursor = 0
-        world.visibility_budget = 96
+        world.visibility_budget = 64
+        world.visibility_cycle_active = 0
+        world.visibility_dirty = 1
+        world.visibility_next_refresh = 0.0
         world.occlusion_enabled = 1
         world.grass_texture_id = -1
         world.stream_debug_enabled = 0
@@ -598,16 +617,21 @@ attach TerrainWorld:
     fun find_chunk_coord(self, chunk_x: i32, chunk_z: i32) -> i32:
         if self.chunks == 0:
             return 0 - 1
-        i: i32 = 0
-        while i < self.chunk_count:
-            ptr: i64 = Memory.read_ptr(self.chunks + ((i as i64) * 8))
-            if ptr != 0:
-                sx: i32 = Memory.read_i32(self.chunk_world_xs + i * 4)
-                sz: i32 = Memory.read_i32(self.chunk_world_zs + i * 4)
-                if sx == chunk_x:
-                    if sz == chunk_z:
-                        return i
-            i = i + 1
+        # Coordinates inside the cache window have unique residues modulo the
+        # pool width. This turns the hottest world lookup from O(poolChunks)
+        # into one array lookup, independent of render distance.
+        sx_mod: i32 = terrain_positive_mod(chunk_x, self.pool_grid_size)
+        sz_mod: i32 = terrain_positive_mod(chunk_z, self.pool_grid_size)
+        slot: i32 = sz_mod * self.pool_grid_size + sx_mod
+        if slot < 0 or slot >= self.chunk_count:
+            return 0 - 1
+        ptr: i64 = Memory.read_ptr(self.chunks + ((slot as i64) * 8))
+        if ptr != 0:
+            sx: i32 = Memory.read_i32(self.chunk_world_xs + slot * 4)
+            sz: i32 = Memory.read_i32(self.chunk_world_zs + slot * 4)
+            if sx == chunk_x:
+                if sz == chunk_z:
+                    return slot
         return 0 - 1
 
     fun clear_pending(self):
@@ -684,6 +708,12 @@ attach TerrainWorld:
             return
         if Memory.read_i32(self.pending_flags + slot * 4) != 0:
             return
+        # The toroidal slot may still carry stale seam/edit work for the chunk
+        # that just left the cache. The new target supersedes that work.
+        if self.dirty_flags != 0:
+            Memory.write_i32(self.dirty_flags + slot * 4, 0)
+        if self.urgent_flags != 0:
+            Memory.write_i32(self.urgent_flags + slot * 4, 0)
         idx: i32 = self.pending_count
         Memory.write_i32(self.pending_slots + idx * 4, slot)
         Memory.write_i32(self.pending_xs + idx * 4, chunk_x)
@@ -756,28 +786,46 @@ attach TerrainWorld:
     fun coord_is_loaded_or_pending(self, chunk_x: i32, chunk_z: i32) -> i32:
         if self.find_chunk_coord(chunk_x, chunk_z) >= 0:
             return 1
-        if self.find_pending_coord(chunk_x, chunk_z) >= 0:
-            return 1
+        sx_mod: i32 = terrain_positive_mod(chunk_x, self.pool_grid_size)
+        sz_mod: i32 = terrain_positive_mod(chunk_z, self.pool_grid_size)
+        slot: i32 = sz_mod * self.pool_grid_size + sx_mod
+        if slot >= 0:
+            if slot < self.chunk_count:
+                if Memory.read_i32(self.pending_flags + slot * 4) != 0:
+                    return 1
         return 0
 
     fun schedule_missing_chunks(self):
         if self.pending_count == 0:
             self.clear_pending()
         half_grid: i32 = self.grid_size / 2
-        gz: i32 = 0
-        while gz < self.grid_size:
-            gx: i32 = 0
-            while gx < self.grid_size:
-                want_x: i32 = self.center_chunk_x + gx - half_grid
-                want_z: i32 = self.center_chunk_z + gz - half_grid
-                self.schedule_chunk_if_missing(want_x, want_z)
-                gx = gx + 1
-            gz = gz + 1
+        radius: i32 = 0
+        while radius <= half_grid:
+            if radius == 0:
+                self.schedule_chunk_if_missing(self.center_chunk_x, self.center_chunk_z)
+            else:
+                min_x: i32 = self.center_chunk_x - radius
+                max_x: i32 = self.center_chunk_x + radius
+                min_z: i32 = self.center_chunk_z - radius
+                max_z: i32 = self.center_chunk_z + radius
+                x: i32 = min_x
+                while x <= max_x:
+                    self.schedule_chunk_if_missing(x, min_z)
+                    self.schedule_chunk_if_missing(x, max_z)
+                    x = x + 1
+                z: i32 = min_z + 1
+                while z < max_z:
+                    self.schedule_chunk_if_missing(min_x, z)
+                    self.schedule_chunk_if_missing(max_x, z)
+                    z = z + 1
+            radius = radius + 1
 
     fun schedule_chunk_if_missing(self, chunk_x: i32, chunk_z: i32):
         if self.coord_is_loaded_or_pending(chunk_x, chunk_z) != 0:
             return
-        slot: i32 = self.find_reusable_slot()
+        sx_mod: i32 = terrain_positive_mod(chunk_x, self.pool_grid_size)
+        sz_mod: i32 = terrain_positive_mod(chunk_z, self.pool_grid_size)
+        slot: i32 = sz_mod * self.pool_grid_size + sx_mod
         if slot >= 0:
             self.queue_slot_target(slot, chunk_x, chunk_z)
 
@@ -848,12 +896,13 @@ attach TerrainWorld:
         old_ptr: i64 = self.chunk_ptr_for_slot(slot)
         if old_ptr != 0:
             old_chunk: VoxelChunk = old_ptr as VoxelChunk
-            if old_chunk.mesh_id >= 0:
-                Engine.set_instance_visible(old_chunk.mesh_id, 0)
+            old_chunk.set_render_visible(0)
         self.ensure_slot_target(slot, chunk_x, chunk_z)
         if self.generate_slot_blocks(slot) == 0:
             return 0
         self.stream_debug_generates = self.stream_debug_generates + 1
+        self.visibility_dirty = 1
+        self.visibility_next_refresh = 0.0
         return 1
 
     fun relink_slot_target(self, chunk_x: i32, chunk_z: i32):
@@ -917,8 +966,15 @@ attach TerrainWorld:
                 if self.mesh_async_workspace_ptr != 0:
                     state: AtomicI32 = self.mesh_worker_state_ptr as AtomicI32
                     if state.load() == 0:
-                        snapshot: VoxelMeshSnapshot = VoxelMeshSnapshot.create(chunk)
-                        self.mesh_async_snapshot_ptr = snapshot as i64
+                        if self.mesh_async_snapshot_ptr == 0:
+                            snapshot: VoxelMeshSnapshot = VoxelMeshSnapshot.create(chunk)
+                            self.mesh_async_snapshot_ptr = snapshot as i64
+                        else:
+                            snapshot2: VoxelMeshSnapshot = self.mesh_async_snapshot_ptr as VoxelMeshSnapshot
+                            if snapshot2.refresh(chunk) == 0:
+                                self.cleanup_async_mesh_snapshot()
+                                snapshot3: VoxelMeshSnapshot = VoxelMeshSnapshot.create(chunk)
+                                self.mesh_async_snapshot_ptr = snapshot3 as i64
                         self.mesh_job_slot = slot
                         self.mesh_job_face = 0
                         self.mesh_job_face_count = 0
@@ -1004,7 +1060,6 @@ attach TerrainWorld:
             if state.load() != 3:
                 return 0
             if self.mesh_job_restart != 0:
-                self.cleanup_async_mesh_snapshot()
                 self.mesh_job_slot = -1
                 self.mesh_job_face = 0
                 self.mesh_job_face_count = 0
@@ -1021,7 +1076,6 @@ attach TerrainWorld:
             async_faces: i32 = live_chunk.last_face_count
             async_slot: i32 = self.mesh_job_slot
             self.finish_mesh_job_queue(async_slot)
-            self.cleanup_async_mesh_snapshot()
             self.mesh_job_slot = -1
             self.mesh_job_face = 0
             self.mesh_job_face_count = 0
@@ -1141,33 +1195,24 @@ attach TerrainWorld:
             self.pending_count = 0
             self.pending_cursor = 0
             return 0
-        # Batch phases: generate all targets, link all neighbors, then mesh.
-        # This prevents a freshly loaded row from remeshing itself repeatedly
-        # as each adjacent chunk arrives.
+        # Complete one nearby target through generate -> link -> mesh before
+        # advancing. Ring-ordered scheduling makes useful terrain appear near
+        # the player immediately even with very large view distances.
         idx: i32 = self.pending_cursor
-        while idx < self.pending_count:
-            stage: i32 = Memory.read_i32(self.pending_stages + idx * 4)
-            if stage == 0:
-                slot: i32 = Memory.read_i32(self.pending_slots + idx * 4)
-                chunk_x: i32 = Memory.read_i32(self.pending_xs + idx * 4)
-                chunk_z: i32 = Memory.read_i32(self.pending_zs + idx * 4)
-                self.prepare_slot_target(slot, chunk_x, chunk_z)
-                Memory.write_i32(self.pending_stages + idx * 4, 1)
-                return 0
-            idx = idx + 1
-
-        idx = self.pending_cursor
-        while idx < self.pending_count:
-            stage2: i32 = Memory.read_i32(self.pending_stages + idx * 4)
-            if stage2 == 1:
-                chunk_x2: i32 = Memory.read_i32(self.pending_xs + idx * 4)
-                chunk_z2: i32 = Memory.read_i32(self.pending_zs + idx * 4)
-                self.relink_slot_target(chunk_x2, chunk_z2)
-                Memory.write_i32(self.pending_stages + idx * 4, 2)
-                return 0
-            idx = idx + 1
-
-        current_slot: i32 = Memory.read_i32(self.pending_slots + self.pending_cursor * 4)
+        stage: i32 = Memory.read_i32(self.pending_stages + idx * 4)
+        current_slot: i32 = Memory.read_i32(self.pending_slots + idx * 4)
+        if stage == 0:
+            chunk_x: i32 = Memory.read_i32(self.pending_xs + idx * 4)
+            chunk_z: i32 = Memory.read_i32(self.pending_zs + idx * 4)
+            self.prepare_slot_target(current_slot, chunk_x, chunk_z)
+            Memory.write_i32(self.pending_stages + idx * 4, 1)
+            return 0
+        if stage == 1:
+            chunk_x2: i32 = Memory.read_i32(self.pending_xs + idx * 4)
+            chunk_z2: i32 = Memory.read_i32(self.pending_zs + idx * 4)
+            self.relink_slot_target(chunk_x2, chunk_z2)
+            Memory.write_i32(self.pending_stages + idx * 4, 2)
+            return 0
         self.start_mesh_job(current_slot, 1)
         return 0
 
@@ -1254,18 +1299,43 @@ attach TerrainWorld:
     fun update_visibility(self, cam_x: f32, cam_y: f32, cam_z: f32, yaw: f32, pitch: f32):
         if self.chunks == 0:
             return
-        yaw_rad: f32 = deg2rad(yaw)
+        now: f64 = engine_time_seconds()
+        if self.visibility_cycle_active == 0:
+            if self.visibility_dirty == 0:
+                if now < self.visibility_next_refresh:
+                    return
+            self.visibility_cycle_active = 1
+            self.visibility_cursor = 0
+            self.visibility_eval_x = cam_x
+            self.visibility_eval_y = cam_y
+            self.visibility_eval_z = cam_z
+            self.visibility_eval_yaw = yaw
+            self.visibility_eval_pitch = pitch
+
+        eval_x: f32 = self.visibility_eval_x
+        eval_y: f32 = self.visibility_eval_y
+        eval_z: f32 = self.visibility_eval_z
+        eval_yaw: f32 = self.visibility_eval_yaw
+        eval_pitch: f32 = self.visibility_eval_pitch
+        yaw_rad: f32 = deg2rad(eval_yaw)
         fwd_x: f32 = 0.0 - @sin(yaw_rad)
         fwd_z: f32 = 0.0 - @cos(yaw_rad)
         relaxed_view: i32 = 0
-        if cam_y > (self.chunk_height as f32) + 6.0:
+        if eval_y > (self.chunk_height as f32) + 6.0:
             relaxed_view = 1
-        if terrain_abs_f32(pitch) > 50.0:
+        if terrain_abs_f32(eval_pitch) > 50.0:
             relaxed_view = 1
         processed: i32 = 0
         while processed < self.visibility_budget:
             if self.visibility_cursor >= self.chunk_count:
                 self.visibility_cursor = 0
+                self.visibility_cycle_active = 0
+                self.visibility_dirty = 0
+                # GPU frustum culling handles per-frame camera changes. The
+                # game-side terrain-height occlusion is a coarse, cached layer
+                # and does not need to rebuild GPU cull structure at 15 Hz.
+                self.visibility_next_refresh = now + 0.20
+                return
             slot: i32 = self.visibility_cursor
             self.visibility_cursor = self.visibility_cursor + 1
 
@@ -1280,12 +1350,12 @@ attach TerrainWorld:
                     center_z: f32 = ((chunk_z * self.chunk_size) as f32) + ((self.chunk_size as f32) * 0.5)
                     if visible == 1:
                         if relaxed_view == 0:
-                            visible = self.chunk_in_view_cone(cam_x, cam_z, fwd_x, fwd_z, center_x, center_z)
+                            visible = self.chunk_in_view_cone(eval_x, eval_z, fwd_x, fwd_z, center_x, center_z)
                     if visible == 1:
                         if relaxed_view == 0:
-                            if self.chunk_height_occluded(cam_x, cam_y, cam_z, center_x, center_z) == 1:
+                            if self.chunk_height_occluded(eval_x, eval_y, eval_z, center_x, center_z) == 1:
                                 visible = 0
-                    Engine.set_instance_visible(chunk.mesh_id, visible)
+                    chunk.set_render_visible(visible)
             processed = processed + 1
 
     fun rebuild_visible_chunks(self) -> i32:
@@ -1293,36 +1363,51 @@ attach TerrainWorld:
             return 0
         self.total_faces = 0
         half_grid: i32 = self.grid_size / 2
+        bootstrap_radius: i32 = 2
+        if bootstrap_radius > half_grid:
+            bootstrap_radius = half_grid
+        bootstrap_size: i32 = bootstrap_radius * 2 + 1
         gz: i32 = 0
-        while gz < self.grid_size:
+        while gz < bootstrap_size:
             gx: i32 = 0
-            while gx < self.grid_size:
-                idx: i32 = gz * self.grid_size + gx
-                world_chunk_x: i32 = self.center_chunk_x + gx - half_grid
-                world_chunk_z: i32 = self.center_chunk_z + gz - half_grid
-                self.ensure_slot_target(idx, world_chunk_x, world_chunk_z)
+            while gx < bootstrap_size:
+                world_chunk_x: i32 = self.center_chunk_x + gx - bootstrap_radius
+                world_chunk_z: i32 = self.center_chunk_z + gz - bootstrap_radius
+                sx_mod: i32 = terrain_positive_mod(world_chunk_x, self.pool_grid_size)
+                sz_mod: i32 = terrain_positive_mod(world_chunk_z, self.pool_grid_size)
+                slot: i32 = sz_mod * self.pool_grid_size + sx_mod
+                self.ensure_slot_target(slot, world_chunk_x, world_chunk_z)
                 gx = gx + 1
             gz = gz + 1
 
         gz = 0
-        while gz < self.grid_size:
+        while gz < bootstrap_size:
             gx = 0
-            while gx < self.grid_size:
-                idx = gz * self.grid_size + gx
-                self.generate_slot_blocks(idx)
+            while gx < bootstrap_size:
+                world_chunk_x2: i32 = self.center_chunk_x + gx - bootstrap_radius
+                world_chunk_z2: i32 = self.center_chunk_z + gz - bootstrap_radius
+                sx_mod2: i32 = terrain_positive_mod(world_chunk_x2, self.pool_grid_size)
+                sz_mod2: i32 = terrain_positive_mod(world_chunk_z2, self.pool_grid_size)
+                slot2: i32 = sz_mod2 * self.pool_grid_size + sx_mod2
+                self.generate_slot_blocks(slot2)
                 gx = gx + 1
             gz = gz + 1
 
         self.relink_all_neighbors()
 
         gz = 0
-        while gz < self.grid_size:
+        while gz < bootstrap_size:
             gx = 0
-            while gx < self.grid_size:
-                idx = gz * self.grid_size + gx
-                self.total_faces = self.total_faces + self.upload_slot_mesh(idx)
+            while gx < bootstrap_size:
+                world_chunk_x3: i32 = self.center_chunk_x + gx - bootstrap_radius
+                world_chunk_z3: i32 = self.center_chunk_z + gz - bootstrap_radius
+                sx_mod3: i32 = terrain_positive_mod(world_chunk_x3, self.pool_grid_size)
+                sz_mod3: i32 = terrain_positive_mod(world_chunk_z3, self.pool_grid_size)
+                slot3: i32 = sz_mod3 * self.pool_grid_size + sx_mod3
+                self.total_faces = self.total_faces + self.upload_slot_mesh(slot3)
                 gx = gx + 1
             gz = gz + 1
+        self.schedule_missing_chunks()
         return self.total_faces
 
     fun generate_world(self, seed: i32) -> i32:
