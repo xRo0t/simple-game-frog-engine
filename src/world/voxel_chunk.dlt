@@ -111,6 +111,7 @@ attach VoxelMeshWorkspace:
     # coarser terrain-only surface meshes while blocks/collision stay exact.
     mesh_lod: i32 = -1
     target_lod: i32 = 0
+    mesh_skirt_mask: i32 = 0
     render_visible: i32 = 1
     pos_x: f32 = 0.0
     pos_y: f32 = 0.0
@@ -144,14 +145,23 @@ fun voxel_block_b(block_id: i32) -> f32:
     tint: i32 = (block_id * 71) % 100
     return 0.25 + (tint as f32) * 0.004
 
-fun voxel_write_face_indices(indices: i64, face_index: i32, base_vertex: i32):
+fun voxel_write_face_indices(indices: i64, face_index: i32, base_vertex: i32, face: i32):
     ioff: i64 = (face_index as i64) * 24
     Memory.write_i32(indices + ioff, base_vertex)
-    Memory.write_i32(indices + ioff + 4, base_vertex + 1)
-    Memory.write_i32(indices + ioff + 8, base_vertex + 2)
-    Memory.write_i32(indices + ioff + 12, base_vertex)
-    Memory.write_i32(indices + ioff + 16, base_vertex + 2)
-    Memory.write_i32(indices + ioff + 20, base_vertex + 3)
+    # Faces 0/1/3/4 use the opposite vertex walk from 2/5. Reverse their
+    # triangles so geometric winding always agrees with the stored normal.
+    if face == 2 or face == 5:
+        Memory.write_i32(indices + ioff + 4, base_vertex + 1)
+        Memory.write_i32(indices + ioff + 8, base_vertex + 2)
+        Memory.write_i32(indices + ioff + 12, base_vertex)
+        Memory.write_i32(indices + ioff + 16, base_vertex + 2)
+        Memory.write_i32(indices + ioff + 20, base_vertex + 3)
+    else:
+        Memory.write_i32(indices + ioff + 4, base_vertex + 2)
+        Memory.write_i32(indices + ioff + 8, base_vertex + 1)
+        Memory.write_i32(indices + ioff + 12, base_vertex)
+        Memory.write_i32(indices + ioff + 16, base_vertex + 3)
+        Memory.write_i32(indices + ioff + 20, base_vertex + 2)
 
 fun voxel_write_face_normals(vertices: i64, base_vertex: i32, face: i32):
     nx: f32 = 0.0
@@ -244,7 +254,7 @@ fun voxel_write_lod_patch(chunk: VoxelChunk, vertices: i64, indices: i64, face_i
     off = gpu_wv(vertices, off, x1, y2, z1, cr, cg, cb, u1, v0)
     off = gpu_wv(vertices, off, x0, y3, z1, cr, cg, cb, u0, v0)
     voxel_write_face_normals(vertices, base_vertex, face)
-    voxel_write_face_indices(indices, face_index, base_vertex)
+    voxel_write_face_indices(indices, face_index, base_vertex, face)
     return face_index + 1
 
 fun voxel_write_lod_skirt(chunk: VoxelChunk, vertices: i64, indices: i64, face_index: i32, face: i32, fixed: f32, a0: f32, a1: f32, top0: f32, top1: f32, bottom0: f32, bottom1: f32, block_id: i32) -> i32:
@@ -279,7 +289,7 @@ fun voxel_write_lod_skirt(chunk: VoxelChunk, vertices: i64, indices: i64, face_i
         off = gpu_wv(vertices, off, a1, top1, fixed, cr, cg, cb, u1, v0)
         off = gpu_wv(vertices, off, a0, top0, fixed, cr, cg, cb, u0, v0)
     voxel_write_face_normals(vertices, base_vertex, face)
-    voxel_write_face_indices(indices, face_index, base_vertex)
+    voxel_write_face_indices(indices, face_index, base_vertex, face)
     return face_index + 1
 
 fun voxel_atlas_u(chunk: VoxelChunk, block_id: i32, face: i32, local_u: f32) -> f32:
@@ -512,7 +522,7 @@ fun voxel_write_face(chunk: VoxelChunk, vertices: i64, indices: i64, face_index:
         off = gpu_wv(vertices, off, x0, y1, z1, cr, cg, cb, u0t, v0t)
 
     voxel_write_face_normals(vertices, base_vertex, face)
-    voxel_write_face_indices(indices, face_index, base_vertex)
+    voxel_write_face_indices(indices, face_index, base_vertex, face)
     return face_index + 1
 
 fun voxel_write_quad(chunk: VoxelChunk, vertices: i64, indices: i64, face_index: i32, x0i: i32, y0i: i32, z0i: i32, x1i: i32, y1i: i32, z1i: i32, face: i32, block_id: i32) -> i32:
@@ -590,7 +600,7 @@ fun voxel_write_quad(chunk: VoxelChunk, vertices: i64, indices: i64, face_index:
         off = voxel_write_ao_vertex(vertices, off, x0, y1, z1, cr, cg, cb, u0t, v0t, ao3)
 
     voxel_write_face_normals(vertices, base_vertex, face)
-    voxel_write_face_indices(indices, face_index, base_vertex)
+    voxel_write_face_indices(indices, face_index, base_vertex, face)
     return face_index + 1
 
 fun voxel_face_block_at(chunk: VoxelChunk, face: i32, u: i32, v: i32, slice: i32) -> i32:
@@ -772,6 +782,9 @@ attach VoxelChunk:
         chunk.palette = palette_data
         chunk.mesh_id = -1
         chunk.last_face_count = 0
+        chunk.mesh_lod = -1
+        chunk.target_lod = 0
+        chunk.mesh_skirt_mask = 0
         chunk.render_visible = 1
         chunk.pos_x = 0.0
         chunk.pos_y = 0.0
@@ -1127,13 +1140,21 @@ attach VoxelChunk:
             z = z + 1
         return count
 
-    fun begin_lod_mesh_into(self, workspace: VoxelMeshWorkspace, lod_stride: i32) -> i32:
+    fun begin_lod_mesh_into(self, workspace: VoxelMeshWorkspace, lod_stride: i32, skirt_mask: i32) -> i32:
         lod_step: i32 = lod_stride
         if lod_step < 2:
             lod_step = 2
         cells_x: i32 = (self.size_x + lod_step - 1) / lod_step
         cells_z: i32 = (self.size_z + lod_step - 1) / lod_step
-        max_faces: i32 = cells_x * cells_z + cells_x * 2 + cells_z * 2
+        max_faces: i32 = cells_x * cells_z
+        if skirt_mask % 2 == 1:
+            max_faces = max_faces + cells_z
+        if (skirt_mask / 2) % 2 == 1:
+            max_faces = max_faces + cells_z
+        if (skirt_mask / 4) % 2 == 1:
+            max_faces = max_faces + cells_x
+        if (skirt_mask / 8) % 2 == 1:
+            max_faces = max_faces + cells_x
         if max_faces <= 0:
             self.last_face_count = 0
             return 0
@@ -1145,8 +1166,9 @@ attach VoxelChunk:
 
     # Terrain LOD keeps the authoritative voxel volume untouched and only
     # changes GPU geometry. Each distant cell becomes one sloped surface quad;
-    # four short boundary skirts hide cracks across unequal LOD rings.
-    fun build_lod_mesh_into(self, workspace: VoxelMeshWorkspace, lod_stride: i32) -> i32:
+    # selective boundary skirts hide cracks only where this chunk is coarser
+    # than its neighbor. Equal-LOD chunk edges share the surface directly.
+    fun build_lod_mesh_into(self, workspace: VoxelMeshWorkspace, lod_stride: i32, skirt_mask: i32) -> i32:
         if workspace.vertices == 0:
             return 0
         if workspace.indices == 0:
@@ -1191,8 +1213,9 @@ attach VoxelChunk:
                 nb0 = 0
             if nb1 < 0:
                 nb1 = 0
-            nblock: i32 = voxel_lod_surface_block(self, 0, z2)
-            face_index = voxel_write_lod_skirt(self, workspace.vertices, workspace.indices, face_index, 0, 0.0, z2 as f32, z3 as f32, ny0 as f32, ny1 as f32, nb0 as f32, nb1 as f32, nblock)
+            if skirt_mask % 2 == 1:
+                nblock: i32 = voxel_lod_surface_block(self, 0, z2)
+                face_index = voxel_write_lod_skirt(self, workspace.vertices, workspace.indices, face_index, 0, 0.0, z2 as f32, z3 as f32, ny0 as f32, ny1 as f32, nb0 as f32, nb1 as f32, nblock)
 
             py0: i32 = voxel_lod_surface_y(self, self.size_x - 1, z2)
             py1: i32 = voxel_lod_surface_y(self, self.size_x - 1, z3)
@@ -1202,8 +1225,9 @@ attach VoxelChunk:
                 pb0 = 0
             if pb1 < 0:
                 pb1 = 0
-            pblock: i32 = voxel_lod_surface_block(self, self.size_x - 1, z2)
-            face_index = voxel_write_lod_skirt(self, workspace.vertices, workspace.indices, face_index, 1, self.size_x as f32, z2 as f32, z3 as f32, py0 as f32, py1 as f32, pb0 as f32, pb1 as f32, pblock)
+            if (skirt_mask / 2) % 2 == 1:
+                pblock: i32 = voxel_lod_surface_block(self, self.size_x - 1, z2)
+                face_index = voxel_write_lod_skirt(self, workspace.vertices, workspace.indices, face_index, 1, self.size_x as f32, z2 as f32, z3 as f32, py0 as f32, py1 as f32, pb0 as f32, pb1 as f32, pblock)
             z2 = z3
 
         # Negative/positive Z skirts.
@@ -1220,8 +1244,9 @@ attach VoxelChunk:
                 zb0 = 0
             if zb1 < 0:
                 zb1 = 0
-            zblock: i32 = voxel_lod_surface_block(self, x2, 0)
-            face_index = voxel_write_lod_skirt(self, workspace.vertices, workspace.indices, face_index, 4, 0.0, x2 as f32, x3 as f32, zy0 as f32, zy1 as f32, zb0 as f32, zb1 as f32, zblock)
+            if (skirt_mask / 4) % 2 == 1:
+                zblock: i32 = voxel_lod_surface_block(self, x2, 0)
+                face_index = voxel_write_lod_skirt(self, workspace.vertices, workspace.indices, face_index, 4, 0.0, x2 as f32, x3 as f32, zy0 as f32, zy1 as f32, zb0 as f32, zb1 as f32, zblock)
 
             pzy0: i32 = voxel_lod_surface_y(self, x2, self.size_z - 1)
             pzy1: i32 = voxel_lod_surface_y(self, x3, self.size_z - 1)
@@ -1231,8 +1256,9 @@ attach VoxelChunk:
                 pzb0 = 0
             if pzb1 < 0:
                 pzb1 = 0
-            pzblock: i32 = voxel_lod_surface_block(self, x2, self.size_z - 1)
-            face_index = voxel_write_lod_skirt(self, workspace.vertices, workspace.indices, face_index, 5, self.size_z as f32, x2 as f32, x3 as f32, pzy0 as f32, pzy1 as f32, pzb0 as f32, pzb1 as f32, pzblock)
+            if (skirt_mask / 8) % 2 == 1:
+                pzblock: i32 = voxel_lod_surface_block(self, x2, self.size_z - 1)
+                face_index = voxel_write_lod_skirt(self, workspace.vertices, workspace.indices, face_index, 5, self.size_z as f32, x2 as f32, x3 as f32, pzy0 as f32, pzy1 as f32, pzb0 as f32, pzb1 as f32, pzblock)
             x2 = x3
 
         self.last_face_count = face_index

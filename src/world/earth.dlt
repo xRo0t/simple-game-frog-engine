@@ -5,7 +5,7 @@
 
 import world.terrain
 
-imm TERRAIN_VIEW_DISTANCE_CHUNKS: i32 = 32
+imm TERRAIN_VIEW_DISTANCE_CHUNKS: i32 = 64
 
 @heap struct EarthNode:
     id: i32 = -1
@@ -25,9 +25,7 @@ imm TERRAIN_VIEW_DISTANCE_CHUNKS: i32 = 32
     scale_x: f32 = 1.0
     scale_y: f32 = 1.0
     scale_z: f32 = 1.0
-    ground_id: i32 = -1
     terrain_world_ptr: i64 = 0
-    ground_size: f32 = 1600.0
     goblin_count: i32 = 100000
     group_count: i32 = 220
     spawn_radius: f32 = 360.0
@@ -51,9 +49,7 @@ fun earth_node_create() -> EarthNode:
     node.scale_x = 1.0
     node.scale_y = 1.0
     node.scale_z = 1.0
-    node.ground_id = -1
     node.terrain_world_ptr = 0
-    node.ground_size = 1600.0
     node.goblin_count = 100000
     node.group_count = 220
     node.spawn_radius = 360.0
@@ -92,19 +88,6 @@ attach EarthNode:
         x: f32 = 0.0
         z: f32 = 0.0
         mesh_id: i32 = -1
-
-        self.ground_id = Engine.upload_plane_mesh()
-        self.mesh_id = self.ground_id
-        self.pos_x = 0.0
-        self.pos_y = 0.0
-        self.pos_z = 0.0
-        self.rot_x = 0.0
-        self.rot_y = 0.0
-        self.rot_z = 0.0
-        self.scale_x = self.ground_size
-        self.scale_y = 1.0
-        self.scale_z = self.ground_size
-        Engine.set_transform(self.ground_id, self.pos_x, self.pos_y, self.pos_z, self.rot_x, self.rot_y, self.rot_z, self.scale_x, self.scale_y, self.scale_z)
 
         terrain_grid_size: i32 = TERRAIN_VIEW_DISTANCE_CHUNKS * 2 + 1
         terrain: TerrainWorld = TerrainWorld.create(terrain_grid_size, 40, 32)

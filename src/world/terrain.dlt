@@ -211,6 +211,7 @@ fun terrain_lod_step(lod: i32) -> i32:
     mesh_job_face_count: i32 = 0
     mesh_job_source: i32 = 0
     mesh_job_lod: i32 = 0
+    mesh_job_skirt_mask: i32 = 0
     mesh_job_restart: i32 = 0
     mesh_async_snapshot_ptr: i64 = 0
     mesh_async_workspace_ptr: i64 = 0
@@ -285,9 +286,9 @@ fun terrain_mesh_worker_loop(world_addr: i64):
                                     face = face + 1
                         else:
                             lod_step: i32 = terrain_lod_step(world.mesh_job_lod)
-                            lod_begin: i32 = chunk.begin_lod_mesh_into(workspace, lod_step)
+                            lod_begin: i32 = chunk.begin_lod_mesh_into(workspace, lod_step, world.mesh_job_skirt_mask)
                             if lod_begin > 0:
-                                face_count = chunk.build_lod_mesh_into(workspace, lod_step)
+                                face_count = chunk.build_lod_mesh_into(workspace, lod_step, world.mesh_job_skirt_mask)
                         if face_count > 0:
                             chunk.bake_mesh_position(workspace.vertices, face_count * 4)
             world.mesh_job_face_count = face_count
@@ -333,6 +334,7 @@ attach TerrainWorld:
         world.mesh_job_face_count = 0
         world.mesh_job_source = 0
         world.mesh_job_lod = 0
+        world.mesh_job_skirt_mask = 0
         world.mesh_job_restart = 0
         world.mesh_async_snapshot_ptr = 0
         async_workspace: VoxelMeshWorkspace = VoxelMeshWorkspace.create()
@@ -990,6 +992,35 @@ attach TerrainWorld:
                 return 2
         return self.raw_lod_for_coord(chunk_x, chunk_z)
 
+    # A skirt belongs only to the coarser side of an actual LOD transition.
+    # Missing/equal/coarser neighbors need no skirt, eliminating the old
+    # four-wall shell around every far chunk.
+    fun lod_neighbor_is_finer(self, chunk_x: i32, chunk_z: i32, lod: i32) -> i32:
+        slot: i32 = self.find_chunk_coord(chunk_x, chunk_z)
+        if slot < 0:
+            return 0
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr == 0:
+            return 0
+        neighbor: VoxelChunk = ptr as VoxelChunk
+        if neighbor.target_lod < lod:
+            return 1
+        return 0
+
+    fun lod_skirt_mask_for_coord(self, chunk_x: i32, chunk_z: i32, lod: i32) -> i32:
+        if lod <= 0:
+            return 0
+        mask: i32 = 0
+        if self.lod_neighbor_is_finer(chunk_x - 1, chunk_z, lod) == 1:
+            mask = mask + 1
+        if self.lod_neighbor_is_finer(chunk_x + 1, chunk_z, lod) == 1:
+            mask = mask + 2
+        if self.lod_neighbor_is_finer(chunk_x, chunk_z - 1, lod) == 1:
+            mask = mask + 4
+        if self.lod_neighbor_is_finer(chunk_x, chunk_z + 1, lod) == 1:
+            mask = mask + 8
+        return mask
+
     # Re-evaluate only when the player crosses a chunk boundary. Changed rings
     # join the existing background remesh queue, so there is no mass upload or
     # main-thread spike when a new row enters the view.
@@ -1012,6 +1043,12 @@ attach TerrainWorld:
                             pending = Memory.read_i32(self.pending_flags + slot * 4)
                         if pending == 0:
                             self.mark_dirty_slot(slot)
+                        # A neighboring coarser chunk may gain or lose the one
+                        # transition skirt that stitches this shared edge.
+                        self.mark_stream_neighbor_dirty(chunk_x - 1, chunk_z)
+                        self.mark_stream_neighbor_dirty(chunk_x + 1, chunk_z)
+                        self.mark_stream_neighbor_dirty(chunk_x, chunk_z - 1)
+                        self.mark_stream_neighbor_dirty(chunk_x, chunk_z + 1)
             slot = slot + 1
 
     fun relink_slot_target(self, chunk_x: i32, chunk_z: i32):
@@ -1033,11 +1070,13 @@ attach TerrainWorld:
         ptr: i64 = self.chunk_ptr_for_slot(slot)
         if ptr != 0:
             chunk: VoxelChunk = ptr as VoxelChunk
-            # Surface LODs do not emit internal voxel side faces and their
-            # skirts already cover boundaries, so neighbor arrival cannot
-            # change their geometry.
             if chunk.target_lod > 0:
-                return
+                wanted_mask: i32 = self.lod_skirt_mask_for_coord(chunk_x, chunk_z, chunk.target_lod)
+                if chunk.mesh_lod == chunk.target_lod:
+                    if chunk.mesh_skirt_mask == wanted_mask:
+                        return
+            if self.mesh_job_slot == slot:
+                self.mesh_job_restart = 1
         self.mark_dirty_slot(slot)
 
     fun generate_slot_blocks(self, slot: i32) -> i32:
@@ -1076,6 +1115,7 @@ attach TerrainWorld:
         origin_z: i32 = chunk_z * self.chunk_size
         chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
         job_lod: i32 = chunk.target_lod
+        job_skirt_mask: i32 = self.lod_skirt_mask_for_coord(chunk_x, chunk_z, job_lod)
 
         # Windows currently has real Dolet threads. Build against an immutable
         # snapshot there; platforms without a thread handle use the bounded
@@ -1099,6 +1139,7 @@ attach TerrainWorld:
                         self.mesh_job_face_count = 0
                         self.mesh_job_source = source
                         self.mesh_job_lod = job_lod
+                        self.mesh_job_skirt_mask = job_skirt_mask
                         self.mesh_job_restart = 0
                         state.store(1)
                         return 1
@@ -1107,7 +1148,7 @@ attach TerrainWorld:
         if job_lod <= 0:
             begin_result = chunk.begin_mesh_into(workspace)
         else:
-            begin_result = chunk.begin_lod_mesh_into(workspace, terrain_lod_step(job_lod))
+            begin_result = chunk.begin_lod_mesh_into(workspace, terrain_lod_step(job_lod), job_skirt_mask)
         if begin_result < 0:
             return 0
         self.mesh_job_slot = slot
@@ -1115,6 +1156,7 @@ attach TerrainWorld:
         self.mesh_job_face_count = 0
         self.mesh_job_source = source
         self.mesh_job_lod = job_lod
+        self.mesh_job_skirt_mask = job_skirt_mask
         if begin_result == 0:
             self.mesh_job_face = 6
         return 1
@@ -1159,6 +1201,7 @@ attach TerrainWorld:
         self.mesh_job_face_count = 0
         self.mesh_job_source = 0
         self.mesh_job_lod = 0
+        self.mesh_job_skirt_mask = 0
         self.mesh_job_restart = 0
 
     fun process_mesh_job(self) -> i32:
@@ -1177,6 +1220,7 @@ attach TerrainWorld:
             self.mesh_job_slot = -1
             self.mesh_job_source = 0
             self.mesh_job_lod = 0
+            self.mesh_job_skirt_mask = 0
             self.mesh_job_restart = 0
             return 0
 
@@ -1192,6 +1236,7 @@ attach TerrainWorld:
                 self.mesh_job_face_count = 0
                 self.mesh_job_source = 0
                 self.mesh_job_lod = 0
+                self.mesh_job_skirt_mask = 0
                 self.mesh_job_restart = 0
                 state.store(0)
                 return 0
@@ -1200,6 +1245,7 @@ attach TerrainWorld:
             async_mesh_id: i32 = live_chunk.upload_workspace_mesh_baked(async_workspace, self.mesh_job_face_count)
             if async_mesh_id >= 0:
                 live_chunk.mesh_lod = self.mesh_job_lod
+                live_chunk.mesh_skirt_mask = self.mesh_job_skirt_mask
                 if self.grass_texture_id >= 0:
                     Engine.bind_texture(async_mesh_id, self.grass_texture_id)
             async_faces: i32 = live_chunk.last_face_count
@@ -1210,6 +1256,7 @@ attach TerrainWorld:
             self.mesh_job_face_count = 0
             self.mesh_job_source = 0
             self.mesh_job_lod = 0
+            self.mesh_job_skirt_mask = 0
             self.mesh_job_restart = 0
             state.store(0)
             return async_faces
@@ -1223,7 +1270,7 @@ attach TerrainWorld:
                 self.mesh_job_face_count = chunk.build_mesh_face_into(workspace, self.mesh_job_face, self.mesh_job_face_count)
                 self.mesh_job_face = self.mesh_job_face + 1
             else:
-                self.mesh_job_face_count = chunk.build_lod_mesh_into(workspace, terrain_lod_step(self.mesh_job_lod))
+                self.mesh_job_face_count = chunk.build_lod_mesh_into(workspace, terrain_lod_step(self.mesh_job_lod), self.mesh_job_skirt_mask)
                 self.mesh_job_face = 6
             return 0
 
@@ -1233,12 +1280,14 @@ attach TerrainWorld:
             self.mesh_job_face_count = 0
             self.mesh_job_source = 0
             self.mesh_job_lod = 0
+            self.mesh_job_skirt_mask = 0
             self.mesh_job_restart = 0
             return 0
 
         mesh_id: i32 = chunk.upload_workspace_mesh(workspace, self.mesh_job_face_count)
         if mesh_id >= 0:
             chunk.mesh_lod = self.mesh_job_lod
+            chunk.mesh_skirt_mask = self.mesh_job_skirt_mask
             if self.grass_texture_id >= 0:
                 Engine.bind_texture(mesh_id, self.grass_texture_id)
         faces: i32 = chunk.last_face_count
@@ -1249,6 +1298,7 @@ attach TerrainWorld:
         self.mesh_job_face_count = 0
         self.mesh_job_source = 0
         self.mesh_job_lod = 0
+        self.mesh_job_skirt_mask = 0
         self.mesh_job_restart = 0
         return faces
 
@@ -1270,12 +1320,14 @@ attach TerrainWorld:
             mesh_id = chunk.upload_with_workspace(workspace)
         else:
             lod_step: i32 = terrain_lod_step(chunk.target_lod)
-            if chunk.begin_lod_mesh_into(workspace, lod_step) > 0:
-                lod_faces: i32 = chunk.build_lod_mesh_into(workspace, lod_step)
+            skirt_mask: i32 = self.lod_skirt_mask_for_coord(chunk_x, chunk_z, chunk.target_lod)
+            if chunk.begin_lod_mesh_into(workspace, lod_step, skirt_mask) > 0:
+                lod_faces: i32 = chunk.build_lod_mesh_into(workspace, lod_step, skirt_mask)
                 mesh_id = chunk.upload_workspace_mesh(workspace, lod_faces)
         if mesh_id < 0:
             return 0
         chunk.mesh_lod = chunk.target_lod
+        chunk.mesh_skirt_mask = self.lod_skirt_mask_for_coord(chunk_x, chunk_z, chunk.target_lod)
         if self.grass_texture_id >= 0:
             Engine.bind_texture(mesh_id, self.grass_texture_id)
         return chunk.last_face_count
