@@ -1078,21 +1078,28 @@ attach VoxelChunk:
                 if nx.in_bounds(nx.size_x - 1, y, z) == 1:
                     if nx.get(nx.size_x - 1, y, z) != BlockId.air():
                         return 0
-            return 1
+                return 1
+            # A missing horizontal neighbor means unloaded infinite terrain,
+            # not air. Do not cap the streaming frontier with a fake wall.
+            return 0
         if x >= self.size_x:
             if self.neighbor_pos_x_ptr != 0:
                 px: VoxelChunk = self.neighbor_pos_x_ptr as VoxelChunk
                 if px.in_bounds(0, y, z) == 1:
                     if px.get(0, y, z) != BlockId.air():
                         return 0
-            return 1
+                return 1
+            return 0
         if y < 0:
             if self.neighbor_neg_y_ptr != 0:
                 ny: VoxelChunk = self.neighbor_neg_y_ptr as VoxelChunk
                 if ny.in_bounds(x, ny.size_y - 1, z) == 1:
                     if ny.get(x, ny.size_y - 1, z) != BlockId.air():
                         return 0
-            return 1
+                return 1
+            # The terrain volume continues below y=0 conceptually. Omitting
+            # this cap removes the artificial floor seen in spectator mode.
+            return 0
         if y >= self.size_y:
             if self.neighbor_pos_y_ptr != 0:
                 py: VoxelChunk = self.neighbor_pos_y_ptr as VoxelChunk
@@ -1106,14 +1113,16 @@ attach VoxelChunk:
                 if nz.in_bounds(x, y, nz.size_z - 1) == 1:
                     if nz.get(x, y, nz.size_z - 1) != BlockId.air():
                         return 0
-            return 1
+                return 1
+            return 0
         if z >= self.size_z:
             if self.neighbor_pos_z_ptr != 0:
                 pz: VoxelChunk = self.neighbor_pos_z_ptr as VoxelChunk
                 if pz.in_bounds(x, y, 0) == 1:
                     if pz.get(x, y, 0) != BlockId.air():
                         return 0
-            return 1
+                return 1
+            return 0
         return 1
 
     fun visible_face_count(self) -> i32:

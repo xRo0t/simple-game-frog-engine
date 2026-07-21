@@ -251,6 +251,7 @@ fun terrain_lod_step(lod: i32) -> i32:
     gpu_visibility_enabled: i32 = 1
     occlusion_enabled: i32 = 1
     grass_texture_id: i32 = -1
+    terrain_material: Material3D = Material3D()
     stream_debug_enabled: i32 = 0
     stream_debug_frames: i32 = 0
     stream_debug_generates: i32 = 0
@@ -372,6 +373,7 @@ attach TerrainWorld:
         world.gpu_visibility_enabled = 1
         world.occlusion_enabled = 1
         world.grass_texture_id = -1
+        world.terrain_material = Material3D.create().set_double_sided(0)
         world.stream_debug_enabled = 0
         world.stream_debug_frames = 0
         world.stream_debug_generates = 0
@@ -480,6 +482,15 @@ attach TerrainWorld:
         tex: Texture2D = Assets.textures.load("textures/terrain/terrain_atlas.png", spec)
         if tex.texture_id >= 0:
             self.grass_texture_id = tex.texture_id
+
+    # Terrain alone is single-sided. Legacy models, sprites, and imported
+    # meshes keep Frog's compatible two-sided default.
+    fun bind_terrain_material(self, mesh_id: i32):
+        if mesh_id < 0:
+            return
+        Engine.bind_material(mesh_id, self.terrain_material)
+        if self.grass_texture_id >= 0:
+            Engine.bind_texture(mesh_id, self.grass_texture_id)
 
     fun chunk_ptr_for_slot(self, slot: i32) -> i64:
         if self.chunks == 0:
@@ -1246,8 +1257,7 @@ attach TerrainWorld:
             if async_mesh_id >= 0:
                 live_chunk.mesh_lod = self.mesh_job_lod
                 live_chunk.mesh_skirt_mask = self.mesh_job_skirt_mask
-                if self.grass_texture_id >= 0:
-                    Engine.bind_texture(async_mesh_id, self.grass_texture_id)
+                self.bind_terrain_material(async_mesh_id)
             async_faces: i32 = live_chunk.last_face_count
             async_slot: i32 = self.mesh_job_slot
             self.finish_mesh_job_queue(async_slot)
@@ -1288,8 +1298,7 @@ attach TerrainWorld:
         if mesh_id >= 0:
             chunk.mesh_lod = self.mesh_job_lod
             chunk.mesh_skirt_mask = self.mesh_job_skirt_mask
-            if self.grass_texture_id >= 0:
-                Engine.bind_texture(mesh_id, self.grass_texture_id)
+            self.bind_terrain_material(mesh_id)
         faces: i32 = chunk.last_face_count
         slot: i32 = self.mesh_job_slot
         self.finish_mesh_job_queue(slot)
@@ -1328,8 +1337,7 @@ attach TerrainWorld:
             return 0
         chunk.mesh_lod = chunk.target_lod
         chunk.mesh_skirt_mask = self.lod_skirt_mask_for_coord(chunk_x, chunk_z, chunk.target_lod)
-        if self.grass_texture_id >= 0:
-            Engine.bind_texture(mesh_id, self.grass_texture_id)
+        self.bind_terrain_material(mesh_id)
         return chunk.last_face_count
 
     fun report_stream_debug(self, elapsed_ms: f64):
