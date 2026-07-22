@@ -83,36 +83,78 @@ fun terrain_configure_palette(chunk: VoxelChunk):
     chunk.set_block_face_tile(terrain_water(), 2, water_dark)
     chunk.set_block_face_tile(terrain_water(), 3, water_bright)
 
+fun terrain_saturate(value: f32) -> f32:
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
+
+fun terrain_smooth01(value: f32) -> f32:
+    t: f32 = terrain_saturate(value)
+    return t * t * (3.0 - 2.0 * t)
+
+fun terrain_max_f32(a: f32, b: f32) -> f32:
+    if a > b:
+        return a
+    return b
+
 fun terrain_height_at(wx: i32, wz: i32, seed: i32, max_height: i32) -> i32:
-    idx: i32 = (wz + 4096) * 8192 + (wx + 4096)
     fx: f32 = wx as f32
     fz: f32 = wz as f32
     fs: f32 = seed as f32
 
-    # Broad, low-frequency layers: wide readable plains instead of noisy ripples.
-    height: f32 = 5.0
-    height = height + @sin((fx + fs * 0.11) * 0.010) * 1.25
-    height = height + @cos((fz - fs * 0.07) * 0.012) * 1.10
-    height = height + @sin((fx * 0.006) + (fz * 0.005) + fs * 0.001) * 0.90
+    # Continental scale defines broad regions. Directional waves are domain
+    # warped by each other so features do not repeat as a square height grid.
+    continent: f32 = @sin((fx + fs * 0.31) * 0.0023)
+    continent = continent + @cos((fz - fs * 0.27) * 0.0027)
+    continent = continent + @sin((fx + fz + fs * 0.09) * 0.0017) * 0.65
+    continent = continent / 2.65
 
-    hills: f32 = @sin((fx - fs * 0.19) * 0.022) * @cos((fz + fs * 0.13) * 0.019)
-    if hills > 0.18:
-        height = height + (hills - 0.18) * 7.0
+    broad: f32 = @sin((fx + fs * 0.17) * 0.0071 + @sin(fz * 0.0029) * 1.35)
+    broad = broad + @cos((fz - fs * 0.13) * 0.0063 + @sin(fx * 0.0024) * 1.15)
+    rolling: f32 = @sin((fx - fz + fs * 0.21) * 0.015) * @cos((fx + fz) * 0.010)
 
-    ridge_a: f32 = @sin((fx + fs * 0.31) * 0.007)
-    ridge_b: f32 = @cos((fz - fs * 0.27) * 0.008)
-    mountain_mask: f32 = ridge_a * ridge_b
-    if mountain_mask > 0.36:
-        shoulder: f32 = mountain_mask - 0.36
-        height = height + shoulder * 24.0
-        if mountain_mask > 0.58:
-            height = height + (mountain_mask - 0.58) * 42.0
+    height: f32 = 8.0 + continent * 2.6 + broad * 0.85 + rolling * 1.15
 
-    # Keep open plains calmer; only tiny texture-scale variation remains.
-    if mountain_mask < 0.18:
-        if hills < 0.12:
-            height = 5.0 + (height - 5.0) * 0.45
-    height = height + rand_range(idx, seed, 23, -0.20, 0.20)
+    # Mountains appear in large geographic belts. A sharp ridged signal gives
+    # recognizable ranges while the smooth regional mask preserves plains.
+    continental_mountains: f32 = terrain_smooth01((continent - 0.10) * 2.2)
+    range_field: f32 = @sin((fx + fs * 0.33) * 0.0038) * @cos((fz - fs * 0.25) * 0.0033)
+    range_region: f32 = terrain_smooth01((range_field - 0.04) / 0.58) * 0.88
+    mountain_region: f32 = terrain_max_f32(continental_mountains, range_region)
+    ridge_wave: f32 = @sin((fx + fs * 0.41) * 0.012 + @sin(fz * 0.0037) * 2.2)
+    ridge_wave = terrain_abs_f32(ridge_wave)
+    ridge: f32 = 1.0 - ridge_wave
+    ridge = ridge * ridge
+    mountain_detail: f32 = @sin((fx + fz) * 0.027) * @cos((fz - fx) * 0.021)
+    height = height + mountain_region * 3.0
+    height = height + mountain_region * ridge * 16.5
+    height = height + mountain_region * terrain_max_f32(mountain_detail, 0.0) * 2.4
+
+    # Two sparse, warped drainage networks cut valleys across every biome.
+    # Their deepest center is below sea level, producing continuous rivers;
+    # smooth shoulders produce wide readable valleys instead of one-block cuts.
+    river_warp_x: f32 = @sin((fz - fs * 0.23) * 0.0041) * 1.7
+    river_warp_x = river_warp_x + @sin((fz + fs * 0.07) * 0.0093) * 0.55
+    river_warp_z: f32 = @sin((fx + fs * 0.19) * 0.0037) * 1.6
+    river_warp_z = river_warp_z + @cos((fx - fs * 0.11) * 0.0087) * 0.50
+    river_line_x: f32 = terrain_abs_f32(@sin((fx + fs * 0.37) * 0.0062 + river_warp_x))
+    river_line_z: f32 = terrain_abs_f32(@sin((fz - fs * 0.29) * 0.0056 + river_warp_z))
+    drainage_select: f32 = @sin((fx + fz + fs * 0.41) * 0.00135) * 0.5 + 0.5
+    drainage_select = terrain_smooth01(drainage_select)
+    river_line: f32 = river_line_x * drainage_select + river_line_z * (1.0 - drainage_select)
+    valley: f32 = 1.0 - terrain_smooth01(river_line / 0.20)
+    river: f32 = 1.0 - terrain_smooth01(river_line / 0.055)
+    height = height - valley * (1.6 + mountain_region * 4.2)
+    height = height * (1.0 - river * 0.82) + 3.0 * river
+
+    # A calm safe basin around the initial spawn keeps startup deterministic;
+    # outside it the full generator blends in smoothly.
+    spawn_axis: f32 = terrain_max_f32(terrain_abs_f32(fx), terrain_abs_f32(fz))
+    if spawn_axis < 30.0:
+        spawn_blend: f32 = terrain_smooth01(spawn_axis / 30.0)
+        height = 5.0 * (1.0 - spawn_blend) + height * spawn_blend
 
     h: i32 = height as i32
     if h < 2:
@@ -126,6 +168,7 @@ fun terrain_generate_chunk(chunk: VoxelChunk, seed: i32, origin_x: i32, origin_z
     chunk.fill(terrain_air())
 
     top_limit: i32 = chunk.size_y - 1
+    sea_level: i32 = 6
 
     x: i32 = 0
     y: i32 = 0
@@ -136,17 +179,69 @@ fun terrain_generate_chunk(chunk: VoxelChunk, seed: i32, origin_x: i32, origin_z
             wx: i32 = origin_x + x
             wz: i32 = origin_z + z
             h: i32 = terrain_height_at(wx, wz, seed, top_limit)
+            fx: f32 = wx as f32
+            fz: f32 = wz as f32
+            fs: f32 = seed as f32
+
+            # Cheap column-coherent 3D cave system: warped paths define tunnel
+            # footprints, while independently varying centers/radii make them
+            # climb, descend, intersect, and open into occasional caverns.
+            cave_path_a: f32 = terrain_abs_f32(@sin((fx + fs * 0.31) * 0.043 + @sin(fz * 0.017) * 1.85))
+            cave_path_b: f32 = terrain_abs_f32(@cos((fz - fs * 0.27) * 0.047 + @sin(fx * 0.015) * 1.65))
+            cave_center_a: f32 = 5.0 + @sin((fx + fz) * 0.013) * 2.1 + @cos(fz * 0.021) * 1.15
+            cave_center_b: f32 = 8.5 + @cos((fz - fx) * 0.011) * 2.4 + @sin(fx * 0.019) * 1.20
+            cave_radius_a: f32 = 1.15 + (@sin((fx - fz) * 0.024) + 1.0) * 0.32
+            cave_radius_b: f32 = 1.05 + (@cos((fx + fz) * 0.022) + 1.0) * 0.28
+            cavern_field: f32 = @sin((fx + fs * 0.15) * 0.026)
+            cavern_field = cavern_field + @cos((fz - fs * 0.18) * 0.029)
+            cavern_field = cavern_field + @sin((fx + fz) * 0.018) * 0.72
+            cavern_center: f32 = 6.5 + @sin((fx - fz) * 0.009) * 2.2
+            spawn_axis: f32 = terrain_max_f32(terrain_abs_f32(fx), terrain_abs_f32(fz))
+            caves_enabled: i32 = 1
+            if spawn_axis < 24.0:
+                caves_enabled = 0
+
+            fill_top: i32 = h
+            if h < sea_level:
+                fill_top = sea_level
             y = 0
-            while y <= h:
-                if y == h:
-                    if h > 11:
-                        chunk.set(x, y, z, terrain_stone())
-                    else:
-                        chunk.set(x, y, z, terrain_grass())
-                elif y > h - 3:
-                    chunk.set(x, y, z, terrain_dirt())
+            while y <= fill_top:
+                if y > h:
+                    chunk.set(x, y, z, terrain_water())
                 else:
-                    chunk.set(x, y, z, terrain_stone())
+                    carve: i32 = 0
+                    if caves_enabled == 1:
+                        if y > 1:
+                            if y < h - 2:
+                                yf: f32 = y as f32
+                                if cave_path_a < 0.15:
+                                    if terrain_abs_f32(yf - cave_center_a) < cave_radius_a:
+                                        carve = 1
+                                if carve == 0:
+                                    if cave_path_b < 0.13:
+                                        if terrain_abs_f32(yf - cave_center_b) < cave_radius_b:
+                                            carve = 1
+                                if carve == 0:
+                                    if cavern_field > 1.72:
+                                        cavern_radius: f32 = 1.1 + (cavern_field - 1.72) * 2.8
+                                        if terrain_abs_f32(yf - cavern_center) < cavern_radius:
+                                            carve = 1
+                    if carve == 1:
+                        chunk.set(x, y, z, terrain_air())
+                    elif y == h:
+                        if h <= sea_level + 1:
+                            chunk.set(x, y, z, terrain_sand())
+                        elif h > 21:
+                            chunk.set(x, y, z, terrain_stone())
+                        else:
+                            chunk.set(x, y, z, terrain_grass())
+                    elif y > h - 3:
+                        if h <= sea_level + 1:
+                            chunk.set(x, y, z, terrain_sand())
+                        else:
+                            chunk.set(x, y, z, terrain_dirt())
+                    else:
+                        chunk.set(x, y, z, terrain_stone())
                 y = y + 1
             x = x + 1
         z = z + 1
