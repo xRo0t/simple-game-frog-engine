@@ -97,7 +97,6 @@ attach EarthNode:
 
         goblin_vb: i32 = Engine.upload_model_or_cube("models/player/scene.gltf")
         goblin_tex: Texture2D = Assets.textures.load("models/player/textures/02_-_Default_baseColor.png", TextureSpec.pixel())
-
         while index < self.goblin_count:
             group_id = -1
             if index < 96:

@@ -304,36 +304,16 @@ fun voxel_atlas_u(chunk: VoxelChunk, block_id: i32, face: i32, local_u: f32) -> 
         return local_u
     tile: i32 = chunk.block_face_tile(block_id, face)
     col: i32 = tile % chunk.atlas_cols
-    cell_w: f32 = 1.0 / (chunk.atlas_cols as f32)
-    span: f32 = chunk.atlas_repeat_span as f32
-    if span <= 0.0:
-        span = 1.0
-    lu: f32 = local_u
-    if lu < 0.0:
-        lu = 0.0
-    if lu > span:
-        lu = span
-    inset: f32 = cell_w * 0.001
-    usable: f32 = cell_w - inset * 2.0
-    return (col as f32) * cell_w + inset + (lu / span) * usable
+    # World-aligned atlas materials derive repeating local UVs from world
+    # position. Every vertex only needs to identify the selected atlas cell.
+    return (col as f32) + 0.5
 
 fun voxel_atlas_v(chunk: VoxelChunk, block_id: i32, face: i32, local_v: f32) -> f32:
     if chunk.atlas_rows <= 0:
         return local_v
     tile: i32 = chunk.block_face_tile(block_id, face)
     row: i32 = tile / chunk.atlas_cols
-    cell_h: f32 = 1.0 / (chunk.atlas_rows as f32)
-    span: f32 = chunk.atlas_repeat_span as f32
-    if span <= 0.0:
-        span = 1.0
-    lv: f32 = local_v
-    if lv < 0.0:
-        lv = 0.0
-    if lv > span:
-        lv = span
-    inset: f32 = cell_h * 0.001
-    usable: f32 = cell_h - inset * 2.0
-    return (row as f32) * cell_h + inset + (lv / span) * usable
+    return (row as f32) + 0.5
 
 fun voxel_block_at(chunk: VoxelChunk, x: i32, y: i32, z: i32) -> i32:
     if chunk.in_bounds(x, y, z) == 1:
@@ -818,7 +798,7 @@ fun voxel_vegetation_hash(world_x: i32, world_z: i32, seed: i32) -> i32:
 
 # One vertical card. The material is double-sided, so this remains one quad /
 # two triangles rather than duplicating geometry for its back face.
-fun voxel_write_vegetation_quad(vertices: i64, indices: i64, face_index: i32, center_x: f32, bottom_y: f32, center_z: f32, dir_x: f32, dir_z: f32, height: f32, color_r: f32, color_g: f32, color_b: f32) -> i32:
+fun voxel_write_vegetation_quad(vertices: i64, indices: i64, face_index: i32, center_x: f32, bottom_y: f32, center_z: f32, dir_x: f32, dir_z: f32, height: f32, color_r: f32, color_g: f32, color_b: f32, uv_u0: f32, uv_v0: f32, uv_u1: f32, uv_v1: f32) -> i32:
     base_vertex: i32 = face_index * 4
     off: i64 = (base_vertex as i64) * (FROG_GPU_VERTEX_STRIDE as i64)
     left_x: f32 = center_x - dir_x
@@ -827,10 +807,10 @@ fun voxel_write_vegetation_quad(vertices: i64, indices: i64, face_index: i32, ce
     right_z: f32 = center_z + dir_z
     top_y: f32 = bottom_y + height
 
-    off = gpu_wv(vertices, off, left_x, bottom_y, left_z, color_r, color_g, color_b, 0.0, 1.0)
-    off = gpu_wv(vertices, off, left_x, top_y, left_z, color_r, color_g, color_b, 0.0, 0.0)
-    off = gpu_wv(vertices, off, right_x, top_y, right_z, color_r, color_g, color_b, 1.0, 0.0)
-    off = gpu_wv(vertices, off, right_x, bottom_y, right_z, color_r, color_g, color_b, 1.0, 1.0)
+    off = gpu_wv(vertices, off, left_x, bottom_y, left_z, color_r, color_g, color_b, uv_u0, uv_v1)
+    off = gpu_wv(vertices, off, left_x, top_y, left_z, color_r, color_g, color_b, uv_u0, uv_v0)
+    off = gpu_wv(vertices, off, right_x, top_y, right_z, color_r, color_g, color_b, uv_u1, uv_v0)
+    off = gpu_wv(vertices, off, right_x, bottom_y, right_z, color_r, color_g, color_b, uv_u1, uv_v1)
 
     width: f32 = @sqrt(dir_x * dir_x + dir_z * dir_z)
     normal_x: f32 = 0.0
@@ -1426,9 +1406,9 @@ attach VoxelChunk:
         self.last_face_count = face_index
         return face_index
 
-    # Build both crossed cards for every selected exposed grass column into a
-    # single chunk mesh. There are no vegetation Nodes and no per-tuft draw
-    # calls; Frog receives one static-batchable mesh for the whole chunk.
+    # Build both crossed cards for selected grass and sunflower columns into
+    # one chunk mesh. Both species share one atlas/material, so there are no
+    # vegetation Nodes and no per-plant draw calls.
     fun build_vegetation_mesh_into(self, workspace: VoxelMeshWorkspace, seed: i32, grass_block_id: i32) -> i32:
         max_faces: i32 = self.size_x * self.size_z * 2
         if max_faces <= 0:
@@ -1453,10 +1433,20 @@ attach VoxelChunk:
                                 world_x: i32 = (self.pos_x as i32) + x
                                 world_z: i32 = (self.pos_z as i32) + z
                                 hash: i32 = voxel_vegetation_hash(world_x, world_z, seed)
-                                # About one tuft per three grass blocks is dense
-                                # up close without wasting fill-rate on a solid
+                                roll: i32 = hash % 100
+                                # Sunflowers grow in broad deterministic
+                                # patches. They replace some ordinary grass,
+                                # keeping total card density and fill-rate
+                                # unchanged.
+                                patch_hash: i32 = voxel_vegetation_hash(world_x / 6, world_z / 6, seed + 7919)
+                                is_sunflower: i32 = 0
+                                if patch_hash % 100 < 24:
+                                    if roll < 12:
+                                        is_sunflower = 1
+                                # About one plant per three grass blocks is
+                                # dense up close without creating a solid
                                 # carpet of overlapping alpha cards.
-                                if hash % 100 < 34:
+                                if roll < 34:
                                     jitter_x: f32 = (((hash >> 8) & 255) as f32) / 255.0
                                     jitter_z: f32 = (((hash >> 16) & 255) as f32) / 255.0
                                     jitter_x = (jitter_x - 0.5) * 0.20
@@ -1468,13 +1458,28 @@ attach VoxelChunk:
                                     cs: f32 = @cos(angle)
                                     sn: f32 = @sin(angle)
                                     width_variant: f32 = (((hash >> 20) & 15) as f32) / 15.0
-                                    height_variant: f32 = (((hash >> 24) & 127) as f32) / 127.0
-                                    half_width: f32 = 0.38 + width_variant * 0.08
-                                    height: f32 = 0.78 + height_variant * 0.34
+                                    half_width: f32 = 0.5
+                                    height: f32 = 1.0
                                     shade: f32 = 0.90 + width_variant * 0.10
+                                    uv_u0: f32 = 0.125
+                                    uv_v0: f32 = 0.5
+                                    uv_u1: f32 = 0.375
+                                    uv_v1: f32 = 1.0
+                                    if is_sunflower != 0:
+                                        # The 64x64 atlas cell spans 2x2 world
+                                        # units, preserving exactly 32 px per
+                                        # meter. Transparent side gutters make
+                                        # the visible flower about 1.1 m wide.
+                                        half_width = 1.0
+                                        height = 2.0
+                                        shade = 1.0
+                                        uv_u0 = 0.5
+                                        uv_v0 = 0.0
+                                        uv_u1 = 1.0
+                                        uv_v1 = 1.0
 
-                                    face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, cs * half_width, sn * half_width, height, shade, 1.0, shade)
-                                    face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, (0.0 - sn) * half_width, cs * half_width, height, shade, 1.0, shade)
+                                    face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, cs * half_width, sn * half_width, height, shade, 1.0, shade, uv_u0, uv_v0, uv_u1, uv_v1)
+                                    face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, (0.0 - sn) * half_width, cs * half_width, height, shade, 1.0, shade, uv_u0, uv_v0, uv_u1, uv_v1)
                 x = x + 1
             z = z + 1
 

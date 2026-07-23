@@ -7,8 +7,8 @@ import frog
 import game.runtime
 
 Engine.window.create("Simple Game - OOP Nodes", 1200, 720)
-#Engine.window.set_mode(WindowMode.fullscreen())
-Engine.window.set_mode(WindowMode.windowed())
+Engine.window.set_mode(WindowMode.fullscreen())
+#Engine.window.set_mode(WindowMode.windowed())
 #Engine.window.set_mode(WindowMode.borderless_fullscreen())
 # Try one present mode at a time:
 #Engine.properties.set_present_mode(PresentMode.auto())

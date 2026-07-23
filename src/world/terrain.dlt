@@ -54,7 +54,10 @@ fun terrain_configure_palette(chunk: VoxelChunk):
     chunk.set_block_color(terrain_stone(), 1.0, 1.0, 1.0)
     chunk.set_block_color(terrain_sand(), 1.0, 1.0, 1.0)
     chunk.set_block_color(terrain_water(), 1.0, 1.0, 1.0)
-    chunk.set_texture_atlas(6, 3, 40)
+    # Six materials x three directional-brightness rows. The material's
+    # world-pixel-atlas shader repeats each 32 px tile once per world unit,
+    # independent of greedy-quad or LOD patch size.
+    chunk.set_texture_atlas(6, 3, 1)
     chunk.set_block_tile(terrain_grass(), grass_side_medium)
     chunk.set_block_face_tile(terrain_grass(), 0, grass_side_dark)
     chunk.set_block_face_tile(terrain_grass(), 1, grass_side_dark)
@@ -799,10 +802,13 @@ attach TerrainWorld:
         world.occlusion_enabled = 1
         world.grass_texture_id = -1
         world.vegetation_texture_id = -1
-        world.terrain_material = Material3D.create().set_double_sided(0)
-        # Grass uses the same fast cutout path as Sprite3D. This keeps it in
-        # the opaque depth-writing pass; alpha blending is slower and causes
-        # ordering artifacts for dense crossed cards.
+        # Each 32 px material is centered inside a mip-safe 64 px cell. The
+        # 16 px wrapped gutter on every side keeps atlas cells independent
+        # through mip level 6, including distant LOD terrain.
+        world.terrain_material = Material3D.create().set_double_sided(0).set_world_pixel_atlas(6, 3, 0.25)
+        # Vegetation uses the same fast cutout path as Sprite3D. This keeps it
+        # in the opaque depth-writing pass; alpha blending is slower and
+        # causes ordering artifacts for dense crossed cards.
         world.vegetation_material = Material3D.create()
         world.vegetation_material.alpha_clip = 1
         world.vegetation_material.transparent = 0
@@ -987,17 +993,18 @@ attach TerrainWorld:
     fun load_grass_texture(self):
         if self.grass_texture_id < 0:
             spec: TextureSpec = TextureSpec.pixel_tiled()
+            spec.anisotropy = 8.0
             tex: Texture2D = Assets.textures.load("textures/terrain/terrain_atlas.png", spec)
             if tex.texture_id >= 0:
                 self.grass_texture_id = tex.texture_id
         if self.vegetation_texture_id < 0:
-            # Clamp prevents transparent opposite edges from wrapping into the
-            # card. Mips + anisotropy keep thin blades stable in motion.
+            # Grass and sunflowers share one clamp-sampled atlas and therefore
+            # one chunk draw batch. Mips + anisotropy keep thin edges stable.
             vegetation_spec: TextureSpec = TextureSpec.pixel()
             vegetation_spec.mipmaps = 1
             vegetation_spec.mipmap_filter = 1
             vegetation_spec.anisotropy = 4.0
-            vegetation_tex: Texture2D = Assets.textures.load("textures/terrain/tall_grass.png", vegetation_spec)
+            vegetation_tex: Texture2D = Assets.textures.load("textures/terrain/vegetation_atlas.png", vegetation_spec)
             if vegetation_tex.texture_id >= 0:
                 self.vegetation_texture_id = vegetation_tex.texture_id
 
