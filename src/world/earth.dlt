@@ -90,7 +90,7 @@ attach EarthNode:
         mesh_id: i32 = -1
 
         terrain_grid_size: i32 = TERRAIN_VIEW_DISTANCE_CHUNKS * 2 + 1
-        terrain: TerrainWorld = TerrainWorld.create(terrain_grid_size, 40, 32)
+        terrain: TerrainWorld = TerrainWorld.create(terrain_grid_size, 40, 256)
         terrain_faces: i32 = terrain.generate_world(1337)
         self.terrain_world_ptr = terrain as i64
         print("Voxel terrain faces " + Convert.i32_to_str(terrain_faces))

@@ -103,10 +103,17 @@ attach VoxelMeshWorkspace:
     size_x: i32 = 0
     size_y: i32 = 0
     size_z: i32 = 0
+    # Highest Y that may contain a non-air block. Tall chunks keep their full
+    # authoritative volume, while meshing skips the guaranteed-empty ceiling.
+    content_max_y: i32 = -1
     blocks: i64 = 0
     palette: i64 = 0
     mesh_id: i32 = -1
+    # Tall grass is a separate alpha-cutout mesh. Keeping it outside the solid
+    # terrain mesh preserves the terrain's fast single-sided opaque material.
+    vegetation_mesh_id: i32 = -1
     last_face_count: i32 = 0
+    last_vegetation_face_count: i32 = 0
     # 0 is the full greedy voxel mesh. Positive values select progressively
     # coarser terrain-only surface meshes while blocks/collision stay exact.
     mesh_lod: i32 = -1
@@ -210,7 +217,7 @@ fun voxel_lod_surface_y(chunk: VoxelChunk, x: i32, z: i32) -> i32:
         sz = 0
     if sz >= chunk.size_z:
         sz = chunk.size_z - 1
-    y: i32 = chunk.size_y - 1
+    y: i32 = chunk.content_max_y
     while y >= 0:
         if chunk.get(sx, y, sz) != BlockId.air():
             return y + 1
@@ -228,7 +235,7 @@ fun voxel_lod_surface_block(chunk: VoxelChunk, x: i32, z: i32) -> i32:
         sz = 0
     if sz >= chunk.size_z:
         sz = chunk.size_z - 1
-    y: i32 = chunk.size_y - 1
+    y: i32 = chunk.content_max_y
     while y >= 0:
         block_id: i32 = chunk.get(sx, y, sz)
         if block_id != BlockId.air():
@@ -605,35 +612,69 @@ fun voxel_write_quad(chunk: VoxelChunk, vertices: i64, indices: i64, face_index:
 
 fun voxel_face_block_at(chunk: VoxelChunk, face: i32, u: i32, v: i32, slice: i32) -> i32:
     block_id: i32 = BlockId.air()
+    idx: i64 = 0
+    neighbor_id: i32 = BlockId.air()
+    y_stride: i64 = chunk.size_y as i64
+    z_stride: i64 = (chunk.size_x as i64) * y_stride
     if face == 0:
-        block_id = chunk.get(slice, u, v)
+        idx = ((v * chunk.size_x + slice) * chunk.size_y + u) as i64
+        block_id = (Memory.read_i8(chunk.blocks + idx) as i32) & 255
         if block_id != BlockId.air():
-            if chunk.face_visible(slice - 1, u, v) == 1:
+            if slice > 0:
+                neighbor_id = (Memory.read_i8(chunk.blocks + idx - y_stride) as i32) & 255
+                if neighbor_id == BlockId.air():
+                    return block_id
+            elif chunk.out_of_bounds_face_visible(-1, u, v) == 1:
                 return block_id
     elif face == 1:
-        block_id = chunk.get(slice, u, v)
+        idx = ((v * chunk.size_x + slice) * chunk.size_y + u) as i64
+        block_id = (Memory.read_i8(chunk.blocks + idx) as i32) & 255
         if block_id != BlockId.air():
-            if chunk.face_visible(slice + 1, u, v) == 1:
+            if slice + 1 < chunk.size_x:
+                neighbor_id = (Memory.read_i8(chunk.blocks + idx + y_stride) as i32) & 255
+                if neighbor_id == BlockId.air():
+                    return block_id
+            elif chunk.out_of_bounds_face_visible(chunk.size_x, u, v) == 1:
                 return block_id
     elif face == 2:
-        block_id = chunk.get(u, slice, v)
+        idx = ((v * chunk.size_x + u) * chunk.size_y + slice) as i64
+        block_id = (Memory.read_i8(chunk.blocks + idx) as i32) & 255
         if block_id != BlockId.air():
-            if chunk.face_visible(u, slice - 1, v) == 1:
+            if slice > 0:
+                neighbor_id = (Memory.read_i8(chunk.blocks + idx - 1) as i32) & 255
+                if neighbor_id == BlockId.air():
+                    return block_id
+            elif chunk.out_of_bounds_face_visible(u, -1, v) == 1:
                 return block_id
     elif face == 3:
-        block_id = chunk.get(u, slice, v)
+        idx = ((v * chunk.size_x + u) * chunk.size_y + slice) as i64
+        block_id = (Memory.read_i8(chunk.blocks + idx) as i32) & 255
         if block_id != BlockId.air():
-            if chunk.face_visible(u, slice + 1, v) == 1:
+            if slice + 1 < chunk.size_y:
+                neighbor_id = (Memory.read_i8(chunk.blocks + idx + 1) as i32) & 255
+                if neighbor_id == BlockId.air():
+                    return block_id
+            elif chunk.out_of_bounds_face_visible(u, chunk.size_y, v) == 1:
                 return block_id
     elif face == 4:
-        block_id = chunk.get(u, v, slice)
+        idx = ((slice * chunk.size_x + u) * chunk.size_y + v) as i64
+        block_id = (Memory.read_i8(chunk.blocks + idx) as i32) & 255
         if block_id != BlockId.air():
-            if chunk.face_visible(u, v, slice - 1) == 1:
+            if slice > 0:
+                neighbor_id = (Memory.read_i8(chunk.blocks + idx - z_stride) as i32) & 255
+                if neighbor_id == BlockId.air():
+                    return block_id
+            elif chunk.out_of_bounds_face_visible(u, v, -1) == 1:
                 return block_id
     else:
-        block_id = chunk.get(u, v, slice)
+        idx = ((slice * chunk.size_x + u) * chunk.size_y + v) as i64
+        block_id = (Memory.read_i8(chunk.blocks + idx) as i32) & 255
         if block_id != BlockId.air():
-            if chunk.face_visible(u, v, slice + 1) == 1:
+            if slice + 1 < chunk.size_z:
+                neighbor_id = (Memory.read_i8(chunk.blocks + idx + z_stride) as i32) & 255
+                if neighbor_id == BlockId.air():
+                    return block_id
+            elif chunk.out_of_bounds_face_visible(u, v, chunk.size_z) == 1:
                 return block_id
     return BlockId.air()
 
@@ -669,24 +710,29 @@ fun voxel_greedy_face_mask_size(chunk: VoxelChunk, face: i32) -> i32:
 
 fun voxel_write_greedy_face_with_mask(chunk: VoxelChunk, vertices: i64, indices: i64, start_face_index: i32, face: i32, used: i64) -> i32:
     face_index: i32 = start_face_index
+    active_y: i32 = chunk.content_max_y + 1
+    if active_y <= 0:
+        return face_index
+    if active_y > chunk.size_y:
+        active_y = chunk.size_y
     u_count: i32 = chunk.size_x
     v_count: i32 = chunk.size_z
-    slice_count: i32 = chunk.size_y
+    slice_count: i32 = active_y
     if face == 0:
-        u_count = chunk.size_y
+        u_count = active_y
         v_count = chunk.size_z
         slice_count = chunk.size_x
     elif face == 1:
-        u_count = chunk.size_y
+        u_count = active_y
         v_count = chunk.size_z
         slice_count = chunk.size_x
     elif face == 4:
         u_count = chunk.size_x
-        v_count = chunk.size_y
+        v_count = active_y
         slice_count = chunk.size_z
     elif face == 5:
         u_count = chunk.size_x
-        v_count = chunk.size_y
+        v_count = active_y
         slice_count = chunk.size_z
 
     used_size: i32 = u_count * v_count
@@ -761,11 +807,59 @@ fun voxel_write_greedy_face(chunk: VoxelChunk, vertices: i64, indices: i64, star
     Memory.free(used)
     return face_index
 
+# Stable world-space scatter hash. Grass placement never changes when a chunk
+# is recycled or rebuilt after an edit, so streaming cannot make vegetation
+# pop between different positions.
+fun voxel_vegetation_hash(world_x: i32, world_z: i32, seed: i32) -> i32:
+    h: i32 = world_x * 374761393 + world_z * 668265263 + seed * 1442695041
+    h = (h ^ (h >> 13)) * 1274126177
+    h = h ^ (h >> 16)
+    return h & 2147483647
+
+# One vertical card. The material is double-sided, so this remains one quad /
+# two triangles rather than duplicating geometry for its back face.
+fun voxel_write_vegetation_quad(vertices: i64, indices: i64, face_index: i32, center_x: f32, bottom_y: f32, center_z: f32, dir_x: f32, dir_z: f32, height: f32, color_r: f32, color_g: f32, color_b: f32) -> i32:
+    base_vertex: i32 = face_index * 4
+    off: i64 = (base_vertex as i64) * (FROG_GPU_VERTEX_STRIDE as i64)
+    left_x: f32 = center_x - dir_x
+    left_z: f32 = center_z - dir_z
+    right_x: f32 = center_x + dir_x
+    right_z: f32 = center_z + dir_z
+    top_y: f32 = bottom_y + height
+
+    off = gpu_wv(vertices, off, left_x, bottom_y, left_z, color_r, color_g, color_b, 0.0, 1.0)
+    off = gpu_wv(vertices, off, left_x, top_y, left_z, color_r, color_g, color_b, 0.0, 0.0)
+    off = gpu_wv(vertices, off, right_x, top_y, right_z, color_r, color_g, color_b, 1.0, 0.0)
+    off = gpu_wv(vertices, off, right_x, bottom_y, right_z, color_r, color_g, color_b, 1.0, 1.0)
+
+    width: f32 = @sqrt(dir_x * dir_x + dir_z * dir_z)
+    normal_x: f32 = 0.0
+    normal_z: f32 = 1.0
+    if width > 0.00001:
+        normal_x = dir_z / width
+        normal_z = (0.0 - dir_x) / width
+    gpu_write_vertex_normal(vertices, base_vertex, normal_x, 0.0, normal_z)
+    gpu_write_vertex_normal(vertices, base_vertex + 1, normal_x, 0.0, normal_z)
+    gpu_write_vertex_normal(vertices, base_vertex + 2, normal_x, 0.0, normal_z)
+    gpu_write_vertex_normal(vertices, base_vertex + 3, normal_x, 0.0, normal_z)
+
+    ioff: i64 = (face_index as i64) * 24
+    Memory.write_i32(indices + ioff, base_vertex)
+    Memory.write_i32(indices + ioff + 4, base_vertex + 1)
+    Memory.write_i32(indices + ioff + 8, base_vertex + 2)
+    Memory.write_i32(indices + ioff + 12, base_vertex)
+    Memory.write_i32(indices + ioff + 16, base_vertex + 2)
+    Memory.write_i32(indices + ioff + 20, base_vertex + 3)
+    return face_index + 1
+
 attach VoxelChunk:
 
     static fun create(size_x: i32, size_y: i32, size_z: i32) -> VoxelChunk:
         total: i32 = size_x * size_y * size_z
-        data: i64 = Memory.malloc_zeroed((total as i64) * 4)
+        # Block ids are palette indices (0..255), so storing an i32 per voxel
+        # wastes 75% of the terrain memory. Compact byte storage lets tall
+        # worlds keep the same large horizontal view distance.
+        data: i64 = Memory.malloc_zeroed(total as i64)
         palette_data: i64 = Memory.malloc_zeroed(3072)
         pi: i32 = 0
         while pi < 256:
@@ -778,10 +872,13 @@ attach VoxelChunk:
         chunk.size_x = size_x
         chunk.size_y = size_y
         chunk.size_z = size_z
+        chunk.content_max_y = -1
         chunk.blocks = data
         chunk.palette = palette_data
         chunk.mesh_id = -1
+        chunk.vegetation_mesh_id = -1
         chunk.last_face_count = 0
+        chunk.last_vegetation_face_count = 0
         chunk.mesh_lod = -1
         chunk.target_lod = 0
         chunk.mesh_skirt_mask = 0
@@ -873,7 +970,10 @@ attach VoxelChunk:
         Memory.free(self as i64)
 
     fun index(self, x: i32, y: i32, z: i32) -> i32:
-        return z * self.size_x * self.size_y + y * self.size_x + x
+        # Y-contiguous columns make procedural terrain generation and vertical
+        # collision scans cache-friendly, and allow whole column ranges to be
+        # initialized with one bulk memory operation.
+        return (z * self.size_x + x) * self.size_y + y
 
     fun in_bounds(self, x: i32, y: i32, z: i32) -> i32:
         if x < 0:
@@ -896,7 +996,7 @@ attach VoxelChunk:
         if self.in_bounds(x, y, z) == 0:
             return BlockId.air()
         idx: i64 = self.index(x, y, z) as i64
-        return Memory.read_i32(self.blocks + idx * 4)
+        return (Memory.read_i8(self.blocks + idx) as i32) & 255
 
     fun set(self, x: i32, y: i32, z: i32, block_id: i32):
         if self.blocks == 0:
@@ -904,14 +1004,18 @@ attach VoxelChunk:
         if self.in_bounds(x, y, z) == 0:
             return
         idx: i64 = self.index(x, y, z) as i64
-        Memory.write_i32(self.blocks + idx * 4, block_id)
+        Memory.write_i8(self.blocks + idx, block_id as i8)
+        if block_id != BlockId.air():
+            if y > self.content_max_y:
+                self.content_max_y = y
 
     fun clone_blocks_only(self) -> VoxelChunk:
         clone: VoxelChunk = VoxelChunk()
         clone.size_x = self.size_x
         clone.size_y = self.size_y
         clone.size_z = self.size_z
-        total_bytes: i64 = (self.size_x as i64) * (self.size_y as i64) * (self.size_z as i64) * 4
+        clone.content_max_y = self.content_max_y
+        total_bytes: i64 = (self.size_x as i64) * (self.size_y as i64) * (self.size_z as i64)
         clone.blocks = Memory.malloc(total_bytes)
         if clone.blocks != 0:
             if self.blocks != 0:
@@ -934,13 +1038,14 @@ attach VoxelChunk:
             return 0
         if self.size_z != source.size_z:
             return 0
-        total_bytes: i64 = (self.size_x as i64) * (self.size_y as i64) * (self.size_z as i64) * 4
+        total_bytes: i64 = (self.size_x as i64) * (self.size_y as i64) * (self.size_z as i64)
         Memory.copy(self.blocks, source.blocks, total_bytes)
+        self.content_max_y = source.content_max_y
         return 1
 
     # Neighbor chunks are consulted only at the shared boundary by face
     # visibility and AO. Refreshing that one plane avoids copying four entire
-    # 40x32x40 chunks for every mesh request.
+    # tall chunks for every mesh request.
     fun copy_boundary_from(self, source: VoxelChunk, face: i32) -> i32:
         if self.blocks == 0:
             return 0
@@ -1001,12 +1106,14 @@ attach VoxelChunk:
             return
         total: i32 = self.size_x * self.size_y * self.size_z
         if block_id == BlockId.air():
-            Memory.set(self.blocks, 0, total * 4)
+            Memory.set(self.blocks, 0, total)
+            self.content_max_y = -1
             return
         i: i32 = 0
         while i < total:
-            Memory.write_i32(self.blocks + ((i as i64) * 4), block_id)
+            Memory.write_i8(self.blocks + (i as i64), block_id as i8)
             i = i + 1
+        self.content_max_y = self.size_y - 1
 
     fun set_block_color(self, block_id: i32, r: f32, g: f32, b: f32):
         if self.palette == 0:
@@ -1053,6 +1160,8 @@ attach VoxelChunk:
         self.pos_z = z
         if self.mesh_id >= 0:
             Engine.set_transform(self.mesh_id, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+        if self.vegetation_mesh_id >= 0:
+            Engine.set_transform(self.vegetation_mesh_id, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
 
     fun set_render_visible(self, visible: i32):
         next_visible: i32 = 1
@@ -1063,6 +1172,11 @@ attach VoxelChunk:
         self.render_visible = next_visible
         if self.mesh_id >= 0:
             Engine.set_instance_visible(self.mesh_id, next_visible)
+        if self.vegetation_mesh_id >= 0:
+            vegetation_visible: i32 = next_visible
+            if self.last_vegetation_face_count <= 0:
+                vegetation_visible = 0
+            Engine.set_instance_visible(self.vegetation_mesh_id, vegetation_visible)
 
     fun face_visible(self, x: i32, y: i32, z: i32) -> i32:
         if self.in_bounds(x, y, z) == 0:
@@ -1131,21 +1245,60 @@ attach VoxelChunk:
         y: i32 = 0
         z: i32 = 0
         block_id: i32 = 0
+        neighbor_id: i32 = 0
+        idx: i64 = 0
+        y_stride: i64 = self.size_y as i64
+        z_stride: i64 = (self.size_x as i64) * y_stride
+        max_y: i32 = self.content_max_y
+        if max_y >= self.size_y:
+            max_y = self.size_y - 1
         while z < self.size_z:
-            y = 0
-            while y < self.size_y:
-                x = 0
-                while x < self.size_x:
-                    block_id = self.get(x, y, z)
+            x = 0
+            while x < self.size_x:
+                idx = ((z * self.size_x + x) * self.size_y) as i64
+                y = 0
+                while y <= max_y:
+                    block_id = (Memory.read_i8(self.blocks + idx) as i32) & 255
                     if block_id != BlockId.air():
-                        count = count + self.face_visible(x - 1, y, z)
-                        count = count + self.face_visible(x + 1, y, z)
-                        count = count + self.face_visible(x, y - 1, z)
-                        count = count + self.face_visible(x, y + 1, z)
-                        count = count + self.face_visible(x, y, z - 1)
-                        count = count + self.face_visible(x, y, z + 1)
-                    x = x + 1
-                y = y + 1
+                        if x > 0:
+                            neighbor_id = (Memory.read_i8(self.blocks + idx - y_stride) as i32) & 255
+                            if neighbor_id == BlockId.air():
+                                count = count + 1
+                        else:
+                            count = count + self.out_of_bounds_face_visible(-1, y, z)
+                        if x + 1 < self.size_x:
+                            neighbor_id = (Memory.read_i8(self.blocks + idx + y_stride) as i32) & 255
+                            if neighbor_id == BlockId.air():
+                                count = count + 1
+                        else:
+                            count = count + self.out_of_bounds_face_visible(self.size_x, y, z)
+                        if y > 0:
+                            neighbor_id = (Memory.read_i8(self.blocks + idx - 1) as i32) & 255
+                            if neighbor_id == BlockId.air():
+                                count = count + 1
+                        else:
+                            count = count + self.out_of_bounds_face_visible(x, -1, z)
+                        if y + 1 < self.size_y:
+                            neighbor_id = (Memory.read_i8(self.blocks + idx + 1) as i32) & 255
+                            if neighbor_id == BlockId.air():
+                                count = count + 1
+                        else:
+                            count = count + self.out_of_bounds_face_visible(x, self.size_y, z)
+                        if z > 0:
+                            neighbor_id = (Memory.read_i8(self.blocks + idx - z_stride) as i32) & 255
+                            if neighbor_id == BlockId.air():
+                                count = count + 1
+                        else:
+                            count = count + self.out_of_bounds_face_visible(x, y, -1)
+                        if z + 1 < self.size_z:
+                            neighbor_id = (Memory.read_i8(self.blocks + idx + z_stride) as i32) & 255
+                            if neighbor_id == BlockId.air():
+                                count = count + 1
+                        else:
+                            count = count + self.out_of_bounds_face_visible(x, y, self.size_z)
+                    idx = idx + 1
+                    y = y + 1
+                x = x + 1
             z = z + 1
         return count
 
@@ -1271,6 +1424,61 @@ attach VoxelChunk:
             x2 = x3
 
         self.last_face_count = face_index
+        return face_index
+
+    # Build both crossed cards for every selected exposed grass column into a
+    # single chunk mesh. There are no vegetation Nodes and no per-tuft draw
+    # calls; Frog receives one static-batchable mesh for the whole chunk.
+    fun build_vegetation_mesh_into(self, workspace: VoxelMeshWorkspace, seed: i32, grass_block_id: i32) -> i32:
+        max_faces: i32 = self.size_x * self.size_z * 2
+        if max_faces <= 0:
+            self.last_vegetation_face_count = 0
+            return 0
+        if workspace.ensure_faces(max_faces) == 0:
+            self.last_vegetation_face_count = 0
+            return 0
+
+        face_index: i32 = 0
+        z: i32 = 0
+        while z < self.size_z:
+            x: i32 = 0
+            while x < self.size_x:
+                # voxel_lod_surface_y returns the top face coordinate, so the
+                # owning block is one cell below it.
+                top_y: i32 = voxel_lod_surface_y(self, x, z) - 1
+                if top_y >= 0:
+                    if top_y + 1 < self.size_y:
+                        if self.get(x, top_y, z) == grass_block_id:
+                            if self.get(x, top_y + 1, z) == BlockId.air():
+                                world_x: i32 = (self.pos_x as i32) + x
+                                world_z: i32 = (self.pos_z as i32) + z
+                                hash: i32 = voxel_vegetation_hash(world_x, world_z, seed)
+                                # About one tuft per three grass blocks is dense
+                                # up close without wasting fill-rate on a solid
+                                # carpet of overlapping alpha cards.
+                                if hash % 100 < 34:
+                                    jitter_x: f32 = (((hash >> 8) & 255) as f32) / 255.0
+                                    jitter_z: f32 = (((hash >> 16) & 255) as f32) / 255.0
+                                    jitter_x = (jitter_x - 0.5) * 0.20
+                                    jitter_z = (jitter_z - 0.5) * 0.20
+                                    center_x: f32 = self.pos_x + (x as f32) + 0.5 + jitter_x
+                                    center_z: f32 = self.pos_z + (z as f32) + 0.5 + jitter_z
+                                    bottom_y: f32 = self.pos_y + ((top_y + 1) as f32) + 0.005
+                                    angle: f32 = (((hash >> 4) & 1023) as f32) * 0.006135923
+                                    cs: f32 = @cos(angle)
+                                    sn: f32 = @sin(angle)
+                                    width_variant: f32 = (((hash >> 20) & 15) as f32) / 15.0
+                                    height_variant: f32 = (((hash >> 24) & 127) as f32) / 127.0
+                                    half_width: f32 = 0.38 + width_variant * 0.08
+                                    height: f32 = 0.78 + height_variant * 0.34
+                                    shade: f32 = 0.90 + width_variant * 0.10
+
+                                    face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, cs * half_width, sn * half_width, height, shade, 1.0, shade)
+                                    face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, (0.0 - sn) * half_width, cs * half_width, height, shade, 1.0, shade)
+                x = x + 1
+            z = z + 1
+
+        self.last_vegetation_face_count = face_index
         return face_index
 
     fun build_mesh(self) -> GpuMeshData:
@@ -1423,6 +1631,36 @@ attach VoxelChunk:
             Engine.set_transform(self.mesh_id, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
             Engine.set_mesh_static_batch(self.mesh_id, 1)
         return self.mesh_id
+
+    # Vegetation vertices are already emitted in world space by the worker.
+    # Reusing the same dynamic mesh id avoids GPU allocation churn as toroidal
+    # chunk slots move through the world or switch LOD.
+    fun upload_vegetation_workspace(self, workspace: VoxelMeshWorkspace, face_count: i32) -> i32:
+        self.last_vegetation_face_count = face_count
+        if face_count <= 0:
+            if self.vegetation_mesh_id >= 0:
+                Engine.set_instance_visible(self.vegetation_mesh_id, 0)
+            return self.vegetation_mesh_id
+        if workspace.vertices == 0 or workspace.indices == 0:
+            return -1
+
+        mesh: GpuMeshData = GpuMeshData(vertices=workspace.vertices, vertex_count=face_count * 4, indices=workspace.indices, index_count=face_count * 6)
+        if self.vegetation_mesh_id >= 0:
+            next_mesh_id: i32 = Engine.replace_dynamic_mesh_data(self.vegetation_mesh_id, mesh)
+            if next_mesh_id >= 0:
+                self.vegetation_mesh_id = next_mesh_id
+        else:
+            self.vegetation_mesh_id = Engine.upload_dynamic_mesh_data(mesh)
+        if self.vegetation_mesh_id >= 0:
+            Engine.set_transform(self.vegetation_mesh_id, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+            # Frog's arena MDI static page intentionally has one shared
+            # material/texture record. Terrain owns that page state, while
+            # foliage needs a different alpha-cutout material and texture.
+            # Keep the chunk-merged vegetation mesh independently GPU-culled
+            # so it cannot inherit the terrain atlas from the page representative.
+            Engine.set_mesh_static_batch(self.vegetation_mesh_id, 0)
+            Engine.set_instance_visible(self.vegetation_mesh_id, self.render_visible)
+        return self.vegetation_mesh_id
 
     fun upload(self) -> i32:
         mesh: GpuMeshData = self.build_mesh()

@@ -99,152 +99,365 @@ fun terrain_max_f32(a: f32, b: f32) -> f32:
         return a
     return b
 
-fun terrain_height_at(wx: i32, wz: i32, seed: i32, max_height: i32) -> i32:
+fun terrain_lerp_f32(a: f32, b: f32, t: f32) -> f32:
+    return a + (b - a) * t
+
+fun terrain_fade(value: f32) -> f32:
+    t: f32 = terrain_saturate(value)
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+# Fast deterministic hash. Integer-only mixing is substantially cheaper than
+# sin-based pseudo-random values and remains stable at negative coordinates.
+fun terrain_hash3(x: i32, y: i32, z: i32, seed: i32, salt: i32) -> i32:
+    h: i32 = x * 374761393 + y * 668265263 + z * 1442695041
+    h = h + seed * 1597334677 + salt * 381201581
+    h = (h ^ (h >> 13)) * 1274126177
+    h = h ^ (h >> 16)
+    return h & 2147483647
+
+fun terrain_hash_signed(x: i32, y: i32, z: i32, seed: i32, salt: i32) -> f32:
+    bits: i32 = terrain_hash3(x, y, z, seed, salt) & 65535
+    return (bits as f32) / 32767.5 - 1.0
+
+fun terrain_noise2(x: f32, z: f32, scale: f32, seed: i32, salt: i32) -> f32:
+    px: f32 = x / scale
+    pz: f32 = z / scale
+    x0: i32 = terrain_floor_coord(px)
+    z0: i32 = terrain_floor_coord(pz)
+    tx: f32 = terrain_fade(px - x0 as f32)
+    tz: f32 = terrain_fade(pz - z0 as f32)
+    n00: f32 = terrain_hash_signed(x0, 0, z0, seed, salt)
+    n10: f32 = terrain_hash_signed(x0 + 1, 0, z0, seed, salt)
+    n01: f32 = terrain_hash_signed(x0, 0, z0 + 1, seed, salt)
+    n11: f32 = terrain_hash_signed(x0 + 1, 0, z0 + 1, seed, salt)
+    nx0: f32 = terrain_lerp_f32(n00, n10, tx)
+    nx1: f32 = terrain_lerp_f32(n01, n11, tx)
+    return terrain_lerp_f32(nx0, nx1, tz)
+
+fun terrain_fbm2(x: f32, z: f32, scale: f32, seed: i32, salt: i32) -> f32:
+    value: f32 = terrain_noise2(x, z, scale, seed, salt) * 0.53
+    value = value + terrain_noise2(x, z, scale * 0.5, seed, salt + 1) * 0.27
+    value = value + terrain_noise2(x, z, scale * 0.25, seed, salt + 2) * 0.13
+    value = value + terrain_noise2(x, z, scale * 0.125, seed, salt + 3) * 0.07
+    return value
+
+fun terrain_biome_plains() -> i32:
+    return 0
+
+fun terrain_biome_desert() -> i32:
+    return 1
+
+fun terrain_biome_highlands() -> i32:
+    return 2
+
+fun terrain_biome_alpine() -> i32:
+    return 3
+
+fun terrain_biome_wetlands() -> i32:
+    return 4
+
+struct TerrainColumnSample:
+    height: i32 = 2
+    biome: i32 = 0
+    river: f32 = 0.0
+    mountain: f32 = 0.0
+    temperature: f32 = 0.0
+    moisture: f32 = 0.0
+
+struct TerrainCaveColumnSample:
+    enabled: i32 = 0
+    path_a: f32 = 1.0
+    path_b: f32 = 1.0
+    path_c: f32 = 1.0
+    center_a: f32 = 68.0
+    center_b: f32 = 32.0
+    center_c: f32 = 50.0
+    radius_a: f32 = 1.0
+    radius_b: f32 = 1.0
+    radius_c: f32 = 1.0
+    room_strength: f32 = 0.0
+    room_center: f32 = 48.0
+
+fun terrain_sample_column(wx: i32, wz: i32, seed: i32, max_height: i32) -> TerrainColumnSample:
+    sample: TerrainColumnSample = TerrainColumnSample()
     fx: f32 = wx as f32
     fz: f32 = wz as f32
-    fs: f32 = seed as f32
 
-    # Continental scale defines broad regions. Directional waves are domain
-    # warped by each other so features do not repeat as a square height grid.
-    continent: f32 = @sin((fx + fs * 0.31) * 0.0023)
-    continent = continent + @cos((fz - fs * 0.27) * 0.0027)
-    continent = continent + @sin((fx + fz + fs * 0.09) * 0.0017) * 0.65
-    continent = continent / 2.65
+    # Domain-warp the large fields before sampling. This removes the square
+    # character of value noise while keeping every query deterministic.
+    warp_x: f32 = terrain_noise2(fx, fz, 960.0, seed, 11) * 190.0
+    warp_z: f32 = terrain_noise2(fx + 431.0, fz - 719.0, 960.0, seed, 12) * 190.0
+    sx: f32 = fx + warp_x
+    sz: f32 = fz + warp_z
 
-    broad: f32 = @sin((fx + fs * 0.17) * 0.0071 + @sin(fz * 0.0029) * 1.35)
-    broad = broad + @cos((fz - fs * 0.13) * 0.0063 + @sin(fx * 0.0024) * 1.15)
-    rolling: f32 = @sin((fx - fz + fs * 0.21) * 0.015) * @cos((fx + fz) * 0.010)
+    continent: f32 = terrain_fbm2(sx, sz, 1500.0, seed, 21)
+    erosion: f32 = terrain_fbm2(sx - 977.0, sz + 613.0, 520.0, seed, 31)
+    regional: f32 = terrain_fbm2(sx + 263.0, sz - 337.0, 820.0, seed, 41)
+    detail: f32 = terrain_fbm2(sx, sz, 190.0, seed, 51)
 
-    height: f32 = 8.0 + continent * 2.6 + broad * 0.85 + rolling * 1.15
-
-    # Mountains appear in large geographic belts. A sharp ridged signal gives
-    # recognizable ranges while the smooth regional mask preserves plains.
-    continental_mountains: f32 = terrain_smooth01((continent - 0.10) * 2.2)
-    range_field: f32 = @sin((fx + fs * 0.33) * 0.0038) * @cos((fz - fs * 0.25) * 0.0033)
-    range_region: f32 = terrain_smooth01((range_field - 0.04) / 0.58) * 0.88
-    mountain_region: f32 = terrain_max_f32(continental_mountains, range_region)
-    ridge_wave: f32 = @sin((fx + fs * 0.41) * 0.012 + @sin(fz * 0.0037) * 2.2)
-    ridge_wave = terrain_abs_f32(ridge_wave)
-    ridge: f32 = 1.0 - ridge_wave
+    mountain_region: f32 = terrain_smooth01((regional + 0.18) / 0.72)
+    mountain_region = mountain_region * terrain_smooth01((continent + 0.38) / 0.58)
+    ridge_noise: f32 = terrain_noise2(sx + 157.0, sz - 89.0, 235.0, seed, 61)
+    ridge: f32 = 1.0 - terrain_abs_f32(ridge_noise)
     ridge = ridge * ridge
-    mountain_detail: f32 = @sin((fx + fz) * 0.027) * @cos((fz - fx) * 0.021)
-    height = height + mountain_region * 3.0
-    height = height + mountain_region * ridge * 16.5
-    height = height + mountain_region * terrain_max_f32(mountain_detail, 0.0) * 2.4
+    eroded_ridge: f32 = ridge * terrain_smooth01((0.42 - erosion) / 0.72)
 
-    # Two sparse, warped drainage networks cut valleys across every biome.
-    # Their deepest center is below sea level, producing continuous rivers;
-    # smooth shoulders produce wide readable valleys instead of one-block cuts.
-    river_warp_x: f32 = @sin((fz - fs * 0.23) * 0.0041) * 1.7
-    river_warp_x = river_warp_x + @sin((fz + fs * 0.07) * 0.0093) * 0.55
-    river_warp_z: f32 = @sin((fx + fs * 0.19) * 0.0037) * 1.6
-    river_warp_z = river_warp_z + @cos((fx - fs * 0.11) * 0.0087) * 0.50
-    river_line_x: f32 = terrain_abs_f32(@sin((fx + fs * 0.37) * 0.0062 + river_warp_x))
-    river_line_z: f32 = terrain_abs_f32(@sin((fz - fs * 0.29) * 0.0056 + river_warp_z))
-    drainage_select: f32 = @sin((fx + fz + fs * 0.41) * 0.00135) * 0.5 + 0.5
-    drainage_select = terrain_smooth01(drainage_select)
-    river_line: f32 = river_line_x * drainage_select + river_line_z * (1.0 - drainage_select)
-    valley: f32 = 1.0 - terrain_smooth01(river_line / 0.20)
-    river: f32 = 1.0 - terrain_smooth01(river_line / 0.055)
-    height = height - valley * (1.6 + mountain_region * 4.2)
-    height = height * (1.0 - river * 0.82) + 3.0 * river
+    # Minecraft-scale vertical profile: broad lowlands sit around Y=96 while
+    # eroded ridges can climb above Y=220 without clipping the 256-block world.
+    height: f32 = 96.0 + continent * 26.0 + detail * 7.0
+    height = height + mountain_region * 12.0
+    height = height + mountain_region * eroded_ridge * 120.0
 
-    # A calm safe basin around the initial spawn keeps startup deterministic;
-    # outside it the full generator blends in smoothly.
+    # Rivers follow the zero-contours of a warped drainage field. Zero contour
+    # lines naturally join and bend, unlike periodic rows of analytic waves.
+    drainage: f32 = terrain_fbm2(sx + 1700.0, sz - 1300.0, 680.0, seed, 71)
+    river_line: f32 = terrain_abs_f32(drainage)
+    valley: f32 = 1.0 - terrain_smooth01(river_line / 0.17)
+    river: f32 = 1.0 - terrain_smooth01(river_line / 0.045)
+    height = height - valley * (8.0 + mountain_region * 32.0)
+    height = height * (1.0 - river) + 76.0 * river
+
+    temperature: f32 = terrain_fbm2(fx + 2500.0, fz - 900.0, 1900.0, seed, 81)
+    moisture: f32 = terrain_fbm2(fx - 1600.0, fz + 2100.0, 1550.0, seed, 91)
+    moisture = moisture + river * 0.65
+
+    # Safe spawn plateau blends over a full chunk and never contains caves.
     spawn_axis: f32 = terrain_max_f32(terrain_abs_f32(fx), terrain_abs_f32(fz))
-    if spawn_axis < 30.0:
-        spawn_blend: f32 = terrain_smooth01(spawn_axis / 30.0)
-        height = 5.0 * (1.0 - spawn_blend) + height * spawn_blend
+    if spawn_axis < 52.0:
+        spawn_blend: f32 = terrain_smooth01(spawn_axis / 52.0)
+        height = 96.0 * (1.0 - spawn_blend) + height * spawn_blend
 
     h: i32 = height as i32
     if h < 2:
         h = 2
     if h > max_height - 1:
         h = max_height - 1
-    return h
+
+    biome: i32 = terrain_biome_plains()
+    if temperature > 0.18:
+        if moisture < -0.08:
+            biome = terrain_biome_desert()
+    if mountain_region > 0.48:
+        biome = terrain_biome_highlands()
+    if h > 170:
+        biome = terrain_biome_alpine()
+    if river > 0.30:
+        biome = terrain_biome_wetlands()
+
+    sample.height = h
+    sample.biome = biome
+    sample.river = river
+    sample.mountain = mountain_region
+    sample.temperature = temperature
+    sample.moisture = moisture
+    return sample
+
+fun terrain_height_at(wx: i32, wz: i32, seed: i32, max_height: i32) -> i32:
+    sample: TerrainColumnSample = terrain_sample_column(wx, wz, seed, max_height)
+    return sample.height
+
+fun terrain_sample_cave_column(wx: i32, wz: i32, seed: i32) -> TerrainCaveColumnSample:
+    sample: TerrainCaveColumnSample = TerrainCaveColumnSample()
+    fx: f32 = wx as f32
+    fz: f32 = wz as f32
+    spawn_axis: f32 = terrain_max_f32(terrain_abs_f32(fx), terrain_abs_f32(fz))
+    if spawn_axis < 34.0:
+        return sample
+
+    # Zero-contours form connected paths in X/Z. Slowly varying center and
+    # radius fields lift those paths into real winding 3D tunnels without
+    # evaluating eight 3D hash corners for every solid voxel.
+    sample.enabled = 1
+    # Keep signed contour fields until after interpolation. Interpolating the
+    # absolute values could erase a zero crossing that passes through a cell.
+    sample.path_a = terrain_noise2(fx, fz, 46.0, seed, 111)
+    sample.path_b = terrain_noise2(fx + 731.0, fz - 467.0, 39.0, seed, 121)
+    sample.path_c = terrain_noise2(fx - 503.0, fz + 887.0, 58.0, seed, 141)
+    sample.center_a = 68.0 + terrain_noise2(fx - 211.0, fz + 347.0, 156.0, seed, 113) * 24.0
+    sample.center_b = 32.0 + terrain_noise2(fx + 419.0, fz - 173.0, 174.0, seed, 123) * 22.0
+    sample.center_c = 50.0 + terrain_noise2(fx - 619.0, fz + 251.0, 208.0, seed, 143) * 34.0
+    width_a: f32 = terrain_noise2(fx + 97.0, fz - 281.0, 91.0, seed, 115) * 0.5 + 0.5
+    width_b: f32 = terrain_noise2(fx - 337.0, fz + 109.0, 103.0, seed, 125) * 0.5 + 0.5
+    width_c: f32 = terrain_noise2(fx + 541.0, fz + 733.0, 127.0, seed, 145) * 0.5 + 0.5
+    sample.radius_a = 3.2 + terrain_smooth01(width_a) * 3.8
+    sample.radius_b = 3.0 + terrain_smooth01(width_b) * 4.2
+    sample.radius_c = 2.8 + terrain_smooth01(width_c) * 3.6
+    room_field: f32 = terrain_noise2(fx - 911.0, fz + 619.0, 112.0, seed, 131)
+    sample.room_strength = terrain_smooth01((room_field - 0.42) / 0.34)
+    sample.room_center = 48.0 + terrain_noise2(fx + 271.0, fz - 887.0, 196.0, seed, 133) * 30.0
+    return sample
+
+fun terrain_set_column_range(chunk: VoxelChunk, x: i32, z: i32, min_y: i32, max_y: i32, block_id: i32):
+    low: i32 = min_y
+    high: i32 = max_y
+    if low < 0:
+        low = 0
+    if high >= chunk.size_y:
+        high = chunk.size_y - 1
+    if high < low:
+        return
+    offset: i64 = chunk.index(x, low, z) as i64
+    Memory.set(chunk.blocks + offset, block_id, high - low + 1)
+    if block_id != terrain_air():
+        if high > chunk.content_max_y:
+            chunk.content_max_y = high
+
+fun terrain_carve_column_center(chunk: VoxelChunk, x: i32, z: i32, center: f32, radius: f32, max_y: i32):
+    low: i32 = terrain_floor_coord(center - radius)
+    high: i32 = terrain_floor_coord(center + radius)
+    if low < 2:
+        low = 2
+    if high > max_y:
+        high = max_y
+    terrain_set_column_range(chunk, x, z, low, high, terrain_air())
+
+fun terrain_carve_tunnel_column(chunk: VoxelChunk, x: i32, z: i32, path: f32, threshold: f32, center: f32, radius: f32, max_y: i32):
+    path_distance: f32 = terrain_abs_f32(path)
+    if path_distance >= threshold:
+        return
+    # Fade the vertical radius to zero at both tunnel edges. The contour path
+    # then becomes an elliptical tube instead of a box-height strip.
+    normalized: f32 = path_distance / threshold
+    round_profile: f32 = @sqrt(1.0 - normalized * normalized)
+    terrain_carve_column_center(chunk, x, z, center, radius * round_profile, max_y)
+
+fun terrain_bilerp_f32(v00: f32, v10: f32, v01: f32, v11: f32, tx: f32, tz: f32) -> f32:
+    near_value: f32 = terrain_lerp_f32(v00, v10, tx)
+    far_value: f32 = terrain_lerp_f32(v01, v11, tx)
+    return terrain_lerp_f32(near_value, far_value, tz)
+
+fun terrain_interpolate_column(c00: TerrainColumnSample, c10: TerrainColumnSample, c01: TerrainColumnSample, c11: TerrainColumnSample, tx: f32, tz: f32, max_height: i32) -> TerrainColumnSample:
+    sample: TerrainColumnSample = TerrainColumnSample()
+    height_f: f32 = terrain_bilerp_f32(c00.height as f32, c10.height as f32, c01.height as f32, c11.height as f32, tx, tz)
+    sample.height = (height_f + 0.5) as i32
+    if sample.height < 2:
+        sample.height = 2
+    if sample.height > max_height:
+        sample.height = max_height
+    sample.river = terrain_bilerp_f32(c00.river, c10.river, c01.river, c11.river, tx, tz)
+    sample.mountain = terrain_bilerp_f32(c00.mountain, c10.mountain, c01.mountain, c11.mountain, tx, tz)
+    sample.temperature = terrain_bilerp_f32(c00.temperature, c10.temperature, c01.temperature, c11.temperature, tx, tz)
+    sample.moisture = terrain_bilerp_f32(c00.moisture, c10.moisture, c01.moisture, c11.moisture, tx, tz)
+    sample.biome = terrain_biome_plains()
+    if sample.temperature > 0.18:
+        if sample.moisture < -0.08:
+            sample.biome = terrain_biome_desert()
+    if sample.mountain > 0.48:
+        sample.biome = terrain_biome_highlands()
+    if sample.height > 170:
+        sample.biome = terrain_biome_alpine()
+    if sample.river > 0.30:
+        sample.biome = terrain_biome_wetlands()
+    return sample
+
+fun terrain_interpolate_cave(c00: TerrainCaveColumnSample, c10: TerrainCaveColumnSample, c01: TerrainCaveColumnSample, c11: TerrainCaveColumnSample, tx: f32, tz: f32) -> TerrainCaveColumnSample:
+    sample: TerrainCaveColumnSample = TerrainCaveColumnSample()
+    sample.enabled = 1
+    sample.path_a = terrain_bilerp_f32(c00.path_a, c10.path_a, c01.path_a, c11.path_a, tx, tz)
+    sample.path_b = terrain_bilerp_f32(c00.path_b, c10.path_b, c01.path_b, c11.path_b, tx, tz)
+    sample.path_c = terrain_bilerp_f32(c00.path_c, c10.path_c, c01.path_c, c11.path_c, tx, tz)
+    sample.center_a = terrain_bilerp_f32(c00.center_a, c10.center_a, c01.center_a, c11.center_a, tx, tz)
+    sample.center_b = terrain_bilerp_f32(c00.center_b, c10.center_b, c01.center_b, c11.center_b, tx, tz)
+    sample.center_c = terrain_bilerp_f32(c00.center_c, c10.center_c, c01.center_c, c11.center_c, tx, tz)
+    sample.radius_a = terrain_bilerp_f32(c00.radius_a, c10.radius_a, c01.radius_a, c11.radius_a, tx, tz)
+    sample.radius_b = terrain_bilerp_f32(c00.radius_b, c10.radius_b, c01.radius_b, c11.radius_b, tx, tz)
+    sample.radius_c = terrain_bilerp_f32(c00.radius_c, c10.radius_c, c01.radius_c, c11.radius_c, tx, tz)
+    sample.room_strength = terrain_bilerp_f32(c00.room_strength, c10.room_strength, c01.room_strength, c11.room_strength, tx, tz)
+    sample.room_center = terrain_bilerp_f32(c00.room_center, c10.room_center, c01.room_center, c11.room_center, tx, tz)
+    return sample
 
 fun terrain_generate_chunk(chunk: VoxelChunk, seed: i32, origin_x: i32, origin_z: i32):
     terrain_configure_palette(chunk)
     chunk.fill(terrain_air())
 
     top_limit: i32 = chunk.size_y - 1
-    sea_level: i32 = 6
+    sea_level: i32 = 80
 
-    x: i32 = 0
-    y: i32 = 0
-    z: i32 = 0
-    while z < chunk.size_z:
-        x = 0
-        while x < chunk.size_x:
-            wx: i32 = origin_x + x
-            wz: i32 = origin_z + z
-            h: i32 = terrain_height_at(wx, wz, seed, top_limit)
-            fx: f32 = wx as f32
-            fz: f32 = wz as f32
-            fs: f32 = seed as f32
+    # Evaluate expensive procedural fields on a 4-block lattice and bilinearly
+    # interpolate inside each cell. Adjacent chunks sample the same world-space
+    # edge points, so mountains, rivers, and cave contours remain seamless.
+    sample_step: i32 = 4
+    cell_z: i32 = 0
+    while cell_z < chunk.size_z:
+        next_z: i32 = cell_z + sample_step
+        if next_z > chunk.size_z:
+            next_z = chunk.size_z
+        span_z: f32 = (next_z - cell_z) as f32
+        cell_x: i32 = 0
+        left_ready: i32 = 0
+        terrain_left_near: TerrainColumnSample = TerrainColumnSample()
+        terrain_left_far: TerrainColumnSample = TerrainColumnSample()
+        cave_left_near: TerrainCaveColumnSample = TerrainCaveColumnSample()
+        cave_left_far: TerrainCaveColumnSample = TerrainCaveColumnSample()
+        while cell_x < chunk.size_x:
+            next_x: i32 = cell_x + sample_step
+            if next_x > chunk.size_x:
+                next_x = chunk.size_x
+            if left_ready == 0:
+                terrain_left_near = terrain_sample_column(origin_x + cell_x, origin_z + cell_z, seed, top_limit)
+                terrain_left_far = terrain_sample_column(origin_x + cell_x, origin_z + next_z, seed, top_limit)
+                cave_left_near = terrain_sample_cave_column(origin_x + cell_x, origin_z + cell_z, seed)
+                cave_left_far = terrain_sample_cave_column(origin_x + cell_x, origin_z + next_z, seed)
+                left_ready = 1
+            terrain_right_near: TerrainColumnSample = terrain_sample_column(origin_x + next_x, origin_z + cell_z, seed, top_limit)
+            terrain_right_far: TerrainColumnSample = terrain_sample_column(origin_x + next_x, origin_z + next_z, seed, top_limit)
+            cave_right_near: TerrainCaveColumnSample = terrain_sample_cave_column(origin_x + next_x, origin_z + cell_z, seed)
+            cave_right_far: TerrainCaveColumnSample = terrain_sample_cave_column(origin_x + next_x, origin_z + next_z, seed)
+            span_x: f32 = (next_x - cell_x) as f32
 
-            # Cheap column-coherent 3D cave system: warped paths define tunnel
-            # footprints, while independently varying centers/radii make them
-            # climb, descend, intersect, and open into occasional caverns.
-            cave_path_a: f32 = terrain_abs_f32(@sin((fx + fs * 0.31) * 0.043 + @sin(fz * 0.017) * 1.85))
-            cave_path_b: f32 = terrain_abs_f32(@cos((fz - fs * 0.27) * 0.047 + @sin(fx * 0.015) * 1.65))
-            cave_center_a: f32 = 5.0 + @sin((fx + fz) * 0.013) * 2.1 + @cos(fz * 0.021) * 1.15
-            cave_center_b: f32 = 8.5 + @cos((fz - fx) * 0.011) * 2.4 + @sin(fx * 0.019) * 1.20
-            cave_radius_a: f32 = 1.15 + (@sin((fx - fz) * 0.024) + 1.0) * 0.32
-            cave_radius_b: f32 = 1.05 + (@cos((fx + fz) * 0.022) + 1.0) * 0.28
-            cavern_field: f32 = @sin((fx + fs * 0.15) * 0.026)
-            cavern_field = cavern_field + @cos((fz - fs * 0.18) * 0.029)
-            cavern_field = cavern_field + @sin((fx + fz) * 0.018) * 0.72
-            cavern_center: f32 = 6.5 + @sin((fx - fz) * 0.009) * 2.2
-            spawn_axis: f32 = terrain_max_f32(terrain_abs_f32(fx), terrain_abs_f32(fz))
-            caves_enabled: i32 = 1
-            if spawn_axis < 24.0:
-                caves_enabled = 0
+            z: i32 = cell_z
+            while z < next_z:
+                tz: f32 = ((z - cell_z) as f32) / span_z
+                x: i32 = cell_x
+                while x < next_x:
+                    tx: f32 = ((x - cell_x) as f32) / span_x
+                    wx: i32 = origin_x + x
+                    wz: i32 = origin_z + z
+                    column: TerrainColumnSample = terrain_interpolate_column(terrain_left_near, terrain_right_near, terrain_left_far, terrain_right_far, tx, tz, top_limit)
+                    cave: TerrainCaveColumnSample = terrain_interpolate_cave(cave_left_near, cave_right_near, cave_left_far, cave_right_far, tx, tz)
+                    spawn_axis: f32 = terrain_max_f32(terrain_abs_f32(wx as f32), terrain_abs_f32(wz as f32))
+                    if spawn_axis < 34.0:
+                        cave.enabled = 0
+                    h: i32 = column.height
 
-            fill_top: i32 = h
-            if h < sea_level:
-                fill_top = sea_level
-            y = 0
-            while y <= fill_top:
-                if y > h:
-                    chunk.set(x, y, z, terrain_water())
-                else:
-                    carve: i32 = 0
-                    if caves_enabled == 1:
-                        if y > 1:
-                            if y < h - 2:
-                                yf: f32 = y as f32
-                                if cave_path_a < 0.15:
-                                    if terrain_abs_f32(yf - cave_center_a) < cave_radius_a:
-                                        carve = 1
-                                if carve == 0:
-                                    if cave_path_b < 0.13:
-                                        if terrain_abs_f32(yf - cave_center_b) < cave_radius_b:
-                                            carve = 1
-                                if carve == 0:
-                                    if cavern_field > 1.72:
-                                        cavern_radius: f32 = 1.1 + (cavern_field - 1.72) * 2.8
-                                        if terrain_abs_f32(yf - cavern_center) < cavern_radius:
-                                            carve = 1
-                    if carve == 1:
-                        chunk.set(x, y, z, terrain_air())
-                    elif y == h:
-                        if h <= sea_level + 1:
-                            chunk.set(x, y, z, terrain_sand())
-                        elif h > 21:
-                            chunk.set(x, y, z, terrain_stone())
-                        else:
-                            chunk.set(x, y, z, terrain_grass())
-                    elif y > h - 3:
-                        if h <= sea_level + 1:
-                            chunk.set(x, y, z, terrain_sand())
-                        else:
-                            chunk.set(x, y, z, terrain_dirt())
-                    else:
-                        chunk.set(x, y, z, terrain_stone())
-                y = y + 1
-            x = x + 1
-        z = z + 1
+                    terrain_set_column_range(chunk, x, z, 0, h, terrain_stone())
+                    if h < sea_level:
+                        terrain_set_column_range(chunk, x, z, h + 1, sea_level, terrain_water())
+
+                    surface: i32 = terrain_grass()
+                    subsurface: i32 = terrain_dirt()
+                    if h <= sea_level:
+                        surface = terrain_sand()
+                        subsurface = terrain_sand()
+                    elif column.biome == terrain_biome_desert():
+                        surface = terrain_sand()
+                        subsurface = terrain_sand()
+                    elif column.biome == terrain_biome_alpine():
+                        surface = terrain_stone()
+                    elif column.biome == terrain_biome_highlands():
+                        if h > 125:
+                            surface = terrain_stone()
+
+                    terrain_set_column_range(chunk, x, z, h - 2, h - 1, subsurface)
+                    terrain_set_column_range(chunk, x, z, h, h, surface)
+
+                    if cave.enabled == 1:
+                        cave_roof: i32 = h - 3
+                        terrain_carve_tunnel_column(chunk, x, z, cave.path_a, 0.135, cave.center_a, cave.radius_a, cave_roof)
+                        terrain_carve_tunnel_column(chunk, x, z, cave.path_b, 0.120, cave.center_b, cave.radius_b, cave_roof)
+                        terrain_carve_tunnel_column(chunk, x, z, cave.path_c, 0.105, cave.center_c, cave.radius_c, cave_roof)
+                        if cave.room_strength > 0.0:
+                            room_radius: f32 = @sqrt(cave.room_strength) * 18.0
+                            terrain_carve_column_center(chunk, x, z, cave.room_center, room_radius, h - 6)
+                    x = x + 1
+                z = z + 1
+
+            terrain_left_near = terrain_right_near
+            terrain_left_far = terrain_right_far
+            cave_left_near = cave_right_near
+            cave_left_far = cave_right_far
+            cell_x = next_x
+        cell_z = next_z
 
 fun terrain_chunk_coord(pos: f32, chunk_size: i32) -> i32:
     coord: i32 = pos as i32
@@ -294,25 +507,41 @@ fun terrain_lod_step(lod: i32) -> i32:
     pending_slots: i64 = 0
     pending_xs: i64 = 0
     pending_zs: i64 = 0
+    pending_indices: i64 = 0
     pending_flags: i64 = 0
     pending_stages: i64 = 0
     dirty_slots: i64 = 0
     dirty_flags: i64 = 0
+    lod_priority_slots: i64 = 0
+    lod_priority_flags: i64 = 0
+    lod_downgrade_slots: i64 = 0
+    lod_downgrade_flags: i64 = 0
     urgent_slots: i64 = 0
     urgent_flags: i64 = 0
     mesh_workspace_ptr: i64 = 0
+    mesh_vegetation_workspace_ptr: i64 = 0
     mesh_job_slot: i32 = -1
     mesh_job_face: i32 = 0
     mesh_job_face_count: i32 = 0
+    mesh_job_vegetation_face_count: i32 = 0
     mesh_job_source: i32 = 0
     mesh_job_lod: i32 = 0
     mesh_job_skirt_mask: i32 = 0
     mesh_job_restart: i32 = 0
     mesh_async_snapshot_ptr: i64 = 0
     mesh_async_workspace_ptr: i64 = 0
+    mesh_async_vegetation_workspace_ptr: i64 = 0
     mesh_worker_state_ptr: i64 = 0
     mesh_worker_shutdown_ptr: i64 = 0
     mesh_worker_thread_handle: i64 = 0
+    generation_scratch_ptrs: i64 = 0
+    generation_worker_state_ptrs: i64 = 0
+    generation_worker_shutdown_ptrs: i64 = 0
+    generation_worker_thread_handles: i64 = 0
+    generation_job_chunk_xs: i64 = 0
+    generation_job_chunk_zs: i64 = 0
+    generation_job_indices: i64 = 0
+    generation_worker_count: i32 = 0
     chunk_count: i32 = 0
     grid_size: i32 = 0
     pool_grid_size: i32 = 0
@@ -326,9 +555,14 @@ fun terrain_lod_step(lod: i32) -> i32:
     pending_count: i32 = 0
     pending_cursor: i32 = 0
     stream_budget: i32 = 1
+    stream_new_mesh_streak: i32 = 0
     dirty_count: i32 = 0
     dirty_cursor: i32 = 0
     dirty_budget: i32 = 1
+    lod_priority_count: i32 = 0
+    lod_priority_cursor: i32 = 0
+    lod_downgrade_count: i32 = 0
+    lod_downgrade_cursor: i32 = 0
     urgent_count: i32 = 0
     urgent_cursor: i32 = 0
     visibility_cursor: i32 = 0
@@ -346,7 +580,9 @@ fun terrain_lod_step(lod: i32) -> i32:
     gpu_visibility_enabled: i32 = 1
     occlusion_enabled: i32 = 1
     grass_texture_id: i32 = -1
+    vegetation_texture_id: i32 = -1
     terrain_material: Material3D = Material3D()
+    vegetation_material: Material3D = Material3D()
     stream_debug_enabled: i32 = 0
     stream_debug_frames: i32 = 0
     stream_debug_generates: i32 = 0
@@ -355,6 +591,9 @@ fun terrain_lod_step(lod: i32) -> i32:
     stream_debug_pending_peak: i32 = 0
     stream_debug_accum_ms: f64 = 0.0
     stream_debug_max_ms: f64 = 0.0
+    stream_debug_next_report: f64 = 0.0
+    stream_debug_player_x: f32 = 0.0
+    stream_debug_player_z: f32 = 0.0
     edit_left_down: i32 = 0
     edit_right_down: i32 = 0
 
@@ -367,6 +606,7 @@ fun terrain_mesh_worker_loop(world_addr: i64):
     while shutdown.load() == 0:
         if state.cas(1, 2):
             face_count: i32 = 0
+            vegetation_face_count: i32 = 0
             if world.mesh_async_snapshot_ptr != 0:
                 if world.mesh_async_workspace_ptr != 0:
                     snapshot: VoxelMeshSnapshot = world.mesh_async_snapshot_ptr as VoxelMeshSnapshot
@@ -387,7 +627,38 @@ fun terrain_mesh_worker_loop(world_addr: i64):
                                 face_count = chunk.build_lod_mesh_into(workspace, lod_step, world.mesh_job_skirt_mask)
                         if face_count > 0:
                             chunk.bake_mesh_position(workspace.vertices, face_count * 4)
+                        # Only exact-quality chunks carry individual grass.
+                        # The same worker that meshes terrain also builds the
+                        # vegetation batch, leaving the render thread upload-only.
+                        if world.mesh_job_lod <= 0:
+                            if world.mesh_async_vegetation_workspace_ptr != 0:
+                                vegetation_workspace: VoxelMeshWorkspace = world.mesh_async_vegetation_workspace_ptr as VoxelMeshWorkspace
+                                vegetation_face_count = chunk.build_vegetation_mesh_into(vegetation_workspace, world.seed, terrain_grass())
             world.mesh_job_face_count = face_count
+            world.mesh_job_vegetation_face_count = vegetation_face_count
+            state.store(3)
+        else:
+            Thread.sleep(1)
+
+# Procedural density evaluation is deliberately isolated from the render
+# thread. The worker writes a private, reusable chunk; the render thread only
+# performs one contiguous block copy after the result is published atomically.
+fun terrain_generation_worker_loop(world_addr: i64, worker_index: i32):
+    world: TerrainWorld = world_addr as TerrainWorld
+    state_ptr: i64 = Memory.read_ptr(world.generation_worker_state_ptrs + (worker_index as i64) * 8)
+    shutdown_ptr: i64 = Memory.read_ptr(world.generation_worker_shutdown_ptrs + (worker_index as i64) * 8)
+    state: AtomicI32 = state_ptr as AtomicI32
+    shutdown: AtomicI32 = shutdown_ptr as AtomicI32
+    while shutdown.load() == 0:
+        if state.cas(1, 2):
+            scratch_ptr: i64 = Memory.read_ptr(world.generation_scratch_ptrs + (worker_index as i64) * 8)
+            if scratch_ptr != 0:
+                scratch: VoxelChunk = scratch_ptr as VoxelChunk
+                job_x: i32 = Memory.read_i32(world.generation_job_chunk_xs + worker_index * 4)
+                job_z: i32 = Memory.read_i32(world.generation_job_chunk_zs + worker_index * 4)
+                origin_x: i32 = job_x * world.chunk_size
+                origin_z: i32 = job_z * world.chunk_size
+                terrain_generate_chunk(scratch, world.seed, origin_x, origin_z)
             state.store(3)
         else:
             Thread.sleep(1)
@@ -404,10 +675,15 @@ attach TerrainWorld:
         pending_slots: i64 = Memory.malloc_zeroed((count as i64) * 4)
         pending_xs: i64 = Memory.malloc_zeroed((count as i64) * 4)
         pending_zs: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        pending_indices: i64 = Memory.malloc_zeroed((count as i64) * 4)
         pending_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
         pending_stages: i64 = Memory.malloc_zeroed((count as i64) * 4)
         dirty_slots: i64 = Memory.malloc_zeroed((count as i64) * 4)
         dirty_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        lod_priority_slots: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        lod_priority_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        lod_downgrade_slots: i64 = Memory.malloc_zeroed((count as i64) * 4)
+        lod_downgrade_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
         urgent_slots: i64 = Memory.malloc_zeroed((count as i64) * 4)
         urgent_flags: i64 = Memory.malloc_zeroed((count as i64) * 4)
         world: TerrainWorld = TerrainWorld()
@@ -417,17 +693,25 @@ attach TerrainWorld:
         world.pending_slots = pending_slots
         world.pending_xs = pending_xs
         world.pending_zs = pending_zs
+        world.pending_indices = pending_indices
         world.pending_flags = pending_flags
         world.pending_stages = pending_stages
         world.dirty_slots = dirty_slots
         world.dirty_flags = dirty_flags
+        world.lod_priority_slots = lod_priority_slots
+        world.lod_priority_flags = lod_priority_flags
+        world.lod_downgrade_slots = lod_downgrade_slots
+        world.lod_downgrade_flags = lod_downgrade_flags
         world.urgent_slots = urgent_slots
         world.urgent_flags = urgent_flags
         workspace: VoxelMeshWorkspace = VoxelMeshWorkspace.create()
         world.mesh_workspace_ptr = workspace as i64
+        vegetation_workspace: VoxelMeshWorkspace = VoxelMeshWorkspace.create()
+        world.mesh_vegetation_workspace_ptr = vegetation_workspace as i64
         world.mesh_job_slot = -1
         world.mesh_job_face = 0
         world.mesh_job_face_count = 0
+        world.mesh_job_vegetation_face_count = 0
         world.mesh_job_source = 0
         world.mesh_job_lod = 0
         world.mesh_job_skirt_mask = 0
@@ -435,6 +719,8 @@ attach TerrainWorld:
         world.mesh_async_snapshot_ptr = 0
         async_workspace: VoxelMeshWorkspace = VoxelMeshWorkspace.create()
         world.mesh_async_workspace_ptr = async_workspace as i64
+        async_vegetation_workspace: VoxelMeshWorkspace = VoxelMeshWorkspace.create()
+        world.mesh_async_vegetation_workspace_ptr = async_vegetation_workspace as i64
         worker_state: AtomicI32 = AtomicI32.new(0)
         worker_shutdown: AtomicI32 = AtomicI32.new(0)
         world.mesh_worker_state_ptr = worker_state as i64
@@ -448,6 +734,45 @@ attach TerrainWorld:
         world.cache_margin = cache_margin
         world.chunk_size = chunk_size
         world.chunk_height = chunk_height
+        generation_workers: i32 = CpuInfo.cpu_count() - 1
+        if generation_workers < 1:
+            generation_workers = 1
+        if generation_workers > 4:
+            generation_workers = 4
+        world.generation_worker_count = generation_workers
+        world.generation_scratch_ptrs = Memory.malloc_zeroed(4 * 8)
+        world.generation_worker_state_ptrs = Memory.malloc_zeroed(4 * 8)
+        world.generation_worker_shutdown_ptrs = Memory.malloc_zeroed(4 * 8)
+        world.generation_worker_thread_handles = Memory.malloc_zeroed(4 * 8)
+        world.generation_job_chunk_xs = Memory.malloc_zeroed(4 * 4)
+        world.generation_job_chunk_zs = Memory.malloc_zeroed(4 * 4)
+        world.generation_job_indices = Memory.malloc_zeroed(4 * 4)
+        generation_i: i32 = 0
+        while generation_i < generation_workers:
+            generation_scratch: VoxelChunk = VoxelChunk.create(chunk_size, chunk_height, chunk_size)
+            generation_state: AtomicI32 = AtomicI32.new(0)
+            generation_shutdown: AtomicI32 = AtomicI32.new(0)
+            Memory.write_ptr(world.generation_scratch_ptrs + (generation_i as i64) * 8, generation_scratch as i64)
+            Memory.write_ptr(world.generation_worker_state_ptrs + (generation_i as i64) * 8, generation_state as i64)
+            Memory.write_ptr(world.generation_worker_shutdown_ptrs + (generation_i as i64) * 8, generation_shutdown as i64)
+            Memory.write_i32(world.generation_job_indices + generation_i * 4, 0 - 1)
+            generation_i = generation_i + 1
+        if generation_workers > 0:
+            generation_work0: @heap fun() = fun() terrain_generation_worker_loop(world as i64, 0)
+            generation_thread0: Thread = Thread.spawn(generation_work0)
+            Memory.write_i64(world.generation_worker_thread_handles, generation_thread0.handle)
+        if generation_workers > 1:
+            generation_work1: @heap fun() = fun() terrain_generation_worker_loop(world as i64, 1)
+            generation_thread1: Thread = Thread.spawn(generation_work1)
+            Memory.write_i64(world.generation_worker_thread_handles + 8, generation_thread1.handle)
+        if generation_workers > 2:
+            generation_work2: @heap fun() = fun() terrain_generation_worker_loop(world as i64, 2)
+            generation_thread2: Thread = Thread.spawn(generation_work2)
+            Memory.write_i64(world.generation_worker_thread_handles + 16, generation_thread2.handle)
+        if generation_workers > 3:
+            generation_work3: @heap fun() = fun() terrain_generation_worker_loop(world as i64, 3)
+            generation_thread3: Thread = Thread.spawn(generation_work3)
+            Memory.write_i64(world.generation_worker_thread_handles + 24, generation_thread3.handle)
         world.total_faces = 0
         world.seed = 0
         world.center_chunk_x = 0
@@ -455,9 +780,14 @@ attach TerrainWorld:
         world.pending_count = 0
         world.pending_cursor = 0
         world.stream_budget = 1
+        world.stream_new_mesh_streak = 0
         world.dirty_count = 0
         world.dirty_cursor = 0
         world.dirty_budget = 1
+        world.lod_priority_count = 0
+        world.lod_priority_cursor = 0
+        world.lod_downgrade_count = 0
+        world.lod_downgrade_cursor = 0
         world.urgent_count = 0
         world.urgent_cursor = 0
         world.visibility_cursor = 0
@@ -468,7 +798,16 @@ attach TerrainWorld:
         world.gpu_visibility_enabled = 1
         world.occlusion_enabled = 1
         world.grass_texture_id = -1
+        world.vegetation_texture_id = -1
         world.terrain_material = Material3D.create().set_double_sided(0)
+        # Grass uses the same fast cutout path as Sprite3D. This keeps it in
+        # the opaque depth-writing pass; alpha blending is slower and causes
+        # ordering artifacts for dense crossed cards.
+        world.vegetation_material = Material3D.create()
+        world.vegetation_material.alpha_clip = 1
+        world.vegetation_material.transparent = 0
+        world.vegetation_material.double_sided = 1
+        world.vegetation_material.roughness = 1.0
         world.stream_debug_enabled = 0
         world.stream_debug_frames = 0
         world.stream_debug_generates = 0
@@ -477,6 +816,9 @@ attach TerrainWorld:
         world.stream_debug_pending_peak = 0
         world.stream_debug_accum_ms = 0.0
         world.stream_debug_max_ms = 0.0
+        world.stream_debug_next_report = 0.0
+        world.stream_debug_player_x = 0.0
+        world.stream_debug_player_z = 0.0
         world.edit_left_down = 0
         world.edit_right_down = 0
         return world
@@ -493,6 +835,10 @@ attach TerrainWorld:
             workspace: VoxelMeshWorkspace = self.mesh_async_workspace_ptr as VoxelMeshWorkspace
             workspace.destroy()
             self.mesh_async_workspace_ptr = 0
+        if self.mesh_async_vegetation_workspace_ptr != 0:
+            vegetation_workspace: VoxelMeshWorkspace = self.mesh_async_vegetation_workspace_ptr as VoxelMeshWorkspace
+            vegetation_workspace.destroy()
+            self.mesh_async_vegetation_workspace_ptr = 0
 
     fun shutdown_mesh_worker(self):
         if self.mesh_worker_shutdown_ptr != 0:
@@ -510,7 +856,56 @@ attach TerrainWorld:
             Memory.free(self.mesh_worker_shutdown_ptr)
             self.mesh_worker_shutdown_ptr = 0
 
+    fun shutdown_generation_worker(self):
+        i: i32 = 0
+        while i < self.generation_worker_count:
+            shutdown_ptr: i64 = Memory.read_ptr(self.generation_worker_shutdown_ptrs + (i as i64) * 8)
+            if shutdown_ptr != 0:
+                shutdown: AtomicI32 = shutdown_ptr as AtomicI32
+                shutdown.store(1)
+            i = i + 1
+        i = 0
+        while i < self.generation_worker_count:
+            handle: i64 = Memory.read_i64(self.generation_worker_thread_handles + (i as i64) * 8)
+            if handle != 0:
+                worker: Thread = Thread(handle=handle)
+                worker.join()
+            scratch_ptr: i64 = Memory.read_ptr(self.generation_scratch_ptrs + (i as i64) * 8)
+            if scratch_ptr != 0:
+                scratch: VoxelChunk = scratch_ptr as VoxelChunk
+                scratch.destroy()
+            state_ptr: i64 = Memory.read_ptr(self.generation_worker_state_ptrs + (i as i64) * 8)
+            if state_ptr != 0:
+                Memory.free(state_ptr)
+            shutdown_ptr2: i64 = Memory.read_ptr(self.generation_worker_shutdown_ptrs + (i as i64) * 8)
+            if shutdown_ptr2 != 0:
+                Memory.free(shutdown_ptr2)
+            i = i + 1
+        if self.generation_scratch_ptrs != 0:
+            Memory.free(self.generation_scratch_ptrs)
+            self.generation_scratch_ptrs = 0
+        if self.generation_worker_state_ptrs != 0:
+            Memory.free(self.generation_worker_state_ptrs)
+            self.generation_worker_state_ptrs = 0
+        if self.generation_worker_shutdown_ptrs != 0:
+            Memory.free(self.generation_worker_shutdown_ptrs)
+            self.generation_worker_shutdown_ptrs = 0
+        if self.generation_worker_thread_handles != 0:
+            Memory.free(self.generation_worker_thread_handles)
+            self.generation_worker_thread_handles = 0
+        if self.generation_job_chunk_xs != 0:
+            Memory.free(self.generation_job_chunk_xs)
+            self.generation_job_chunk_xs = 0
+        if self.generation_job_chunk_zs != 0:
+            Memory.free(self.generation_job_chunk_zs)
+            self.generation_job_chunk_zs = 0
+        if self.generation_job_indices != 0:
+            Memory.free(self.generation_job_indices)
+            self.generation_job_indices = 0
+        self.generation_worker_count = 0
+
     fun destroy(self):
+        self.shutdown_generation_worker()
         self.shutdown_mesh_worker()
         if self.chunks != 0:
             i: i32 = 0
@@ -537,6 +932,9 @@ attach TerrainWorld:
         if self.pending_zs != 0:
             Memory.free(self.pending_zs)
             self.pending_zs = 0
+        if self.pending_indices != 0:
+            Memory.free(self.pending_indices)
+            self.pending_indices = 0
         if self.pending_flags != 0:
             Memory.free(self.pending_flags)
             self.pending_flags = 0
@@ -549,6 +947,18 @@ attach TerrainWorld:
         if self.dirty_flags != 0:
             Memory.free(self.dirty_flags)
             self.dirty_flags = 0
+        if self.lod_priority_slots != 0:
+            Memory.free(self.lod_priority_slots)
+            self.lod_priority_slots = 0
+        if self.lod_priority_flags != 0:
+            Memory.free(self.lod_priority_flags)
+            self.lod_priority_flags = 0
+        if self.lod_downgrade_slots != 0:
+            Memory.free(self.lod_downgrade_slots)
+            self.lod_downgrade_slots = 0
+        if self.lod_downgrade_flags != 0:
+            Memory.free(self.lod_downgrade_flags)
+            self.lod_downgrade_flags = 0
         if self.urgent_slots != 0:
             Memory.free(self.urgent_slots)
             self.urgent_slots = 0
@@ -559,6 +969,10 @@ attach TerrainWorld:
             workspace: VoxelMeshWorkspace = self.mesh_workspace_ptr as VoxelMeshWorkspace
             workspace.destroy()
             self.mesh_workspace_ptr = 0
+        if self.mesh_vegetation_workspace_ptr != 0:
+            vegetation_workspace: VoxelMeshWorkspace = self.mesh_vegetation_workspace_ptr as VoxelMeshWorkspace
+            vegetation_workspace.destroy()
+            self.mesh_vegetation_workspace_ptr = 0
         Memory.free(self as i64)
 
     fun set_chunk(self, index: i32, chunk: VoxelChunk):
@@ -571,12 +985,21 @@ attach TerrainWorld:
         Memory.write_ptr(self.chunks + ((index as i64) * 8), chunk as i64)
 
     fun load_grass_texture(self):
-        if self.grass_texture_id >= 0:
-            return
-        spec: TextureSpec = TextureSpec.pixel_tiled()
-        tex: Texture2D = Assets.textures.load("textures/terrain/terrain_atlas.png", spec)
-        if tex.texture_id >= 0:
-            self.grass_texture_id = tex.texture_id
+        if self.grass_texture_id < 0:
+            spec: TextureSpec = TextureSpec.pixel_tiled()
+            tex: Texture2D = Assets.textures.load("textures/terrain/terrain_atlas.png", spec)
+            if tex.texture_id >= 0:
+                self.grass_texture_id = tex.texture_id
+        if self.vegetation_texture_id < 0:
+            # Clamp prevents transparent opposite edges from wrapping into the
+            # card. Mips + anisotropy keep thin blades stable in motion.
+            vegetation_spec: TextureSpec = TextureSpec.pixel()
+            vegetation_spec.mipmaps = 1
+            vegetation_spec.mipmap_filter = 1
+            vegetation_spec.anisotropy = 4.0
+            vegetation_tex: Texture2D = Assets.textures.load("textures/terrain/tall_grass.png", vegetation_spec)
+            if vegetation_tex.texture_id >= 0:
+                self.vegetation_texture_id = vegetation_tex.texture_id
 
     # Terrain alone is single-sided. Legacy models, sprites, and imported
     # meshes keep Frog's compatible two-sided default.
@@ -586,6 +1009,18 @@ attach TerrainWorld:
         Engine.bind_material(mesh_id, self.terrain_material)
         if self.grass_texture_id >= 0:
             Engine.bind_texture(mesh_id, self.grass_texture_id)
+
+    fun bind_vegetation_material(self, mesh_id: i32):
+        if mesh_id < 0:
+            return
+        if self.vegetation_texture_id >= 0:
+            Engine.bind_texture(mesh_id, self.vegetation_texture_id)
+        # Match Sprite3D's binding order so the final material record contains
+        # the alpha-clip and double-sided flags before the mesh can render.
+        Engine.bind_material(mesh_id, self.vegetation_material)
+        # Dense alpha-cutout shadow casters are disproportionately expensive.
+        # Grass still receives world shadows but terrain owns the shadow map.
+        Engine.set_shadow_flags(mesh_id, 0, 1)
 
     fun chunk_ptr_for_slot(self, slot: i32) -> i64:
         if self.chunks == 0:
@@ -769,6 +1204,8 @@ attach TerrainWorld:
         i: i32 = 0
         while i < self.chunk_count:
             Memory.write_i32(self.pending_flags + i * 4, 0)
+            if self.pending_indices != 0:
+                Memory.write_i32(self.pending_indices + i * 4, 0 - 1)
             if self.pending_stages != 0:
                 Memory.write_i32(self.pending_stages + i * 4, 0)
             i = i + 1
@@ -784,6 +1221,26 @@ attach TerrainWorld:
             i = i + 1
         self.dirty_count = 0
         self.dirty_cursor = 0
+
+    fun clear_lod_priority(self):
+        if self.lod_priority_flags == 0:
+            return
+        i: i32 = 0
+        while i < self.chunk_count:
+            Memory.write_i32(self.lod_priority_flags + i * 4, 0)
+            i = i + 1
+        self.lod_priority_count = 0
+        self.lod_priority_cursor = 0
+
+    fun clear_lod_downgrades(self):
+        if self.lod_downgrade_flags == 0:
+            return
+        i: i32 = 0
+        while i < self.chunk_count:
+            Memory.write_i32(self.lod_downgrade_flags + i * 4, 0)
+            i = i + 1
+        self.lod_downgrade_count = 0
+        self.lod_downgrade_cursor = 0
 
     fun clear_urgent(self):
         if self.urgent_flags == 0:
@@ -803,6 +1260,12 @@ attach TerrainWorld:
             if self.dirty_flags != 0:
                 if Memory.read_i32(self.dirty_flags + i * 4) != 0:
                     busy = 1
+            if self.lod_priority_flags != 0:
+                if Memory.read_i32(self.lod_priority_flags + i * 4) != 0:
+                    busy = 1
+            if self.lod_downgrade_flags != 0:
+                if Memory.read_i32(self.lod_downgrade_flags + i * 4) != 0:
+                    busy = 1
             if self.urgent_flags != 0:
                 if Memory.read_i32(self.urgent_flags + i * 4) != 0:
                     busy = 1
@@ -816,6 +1279,12 @@ attach TerrainWorld:
             busy2: i32 = Memory.read_i32(self.pending_flags + i * 4)
             if self.dirty_flags != 0:
                 if Memory.read_i32(self.dirty_flags + i * 4) != 0:
+                    busy2 = 1
+            if self.lod_priority_flags != 0:
+                if Memory.read_i32(self.lod_priority_flags + i * 4) != 0:
+                    busy2 = 1
+            if self.lod_downgrade_flags != 0:
+                if Memory.read_i32(self.lod_downgrade_flags + i * 4) != 0:
                     busy2 = 1
             if self.urgent_flags != 0:
                 if Memory.read_i32(self.urgent_flags + i * 4) != 0:
@@ -840,25 +1309,44 @@ attach TerrainWorld:
             if Memory.read_i32(self.pending_flags + slot * 4) == 0:
                 return
         if Memory.read_i32(self.pending_flags + slot * 4) != 0:
-            pending_i: i32 = self.pending_cursor
-            while pending_i < self.pending_count:
-                if Memory.read_i32(self.pending_slots + pending_i * 4) == slot:
-                    old_x: i32 = Memory.read_i32(self.pending_xs + pending_i * 4)
-                    old_z: i32 = Memory.read_i32(self.pending_zs + pending_i * 4)
-                    if old_x != chunk_x or old_z != chunk_z:
-                        Memory.write_i32(self.pending_xs + pending_i * 4, chunk_x)
-                        Memory.write_i32(self.pending_zs + pending_i * 4, chunk_z)
-                        if self.pending_stages != 0:
+            pending_i: i32 = 0 - 1
+            if self.pending_indices != 0:
+                pending_i = Memory.read_i32(self.pending_indices + slot * 4)
+            # Repair old/corrupt bookkeeping defensively; normal retargets are
+            # O(1), even with a 17k-entry render-distance queue.
+            if pending_i < self.pending_cursor or pending_i >= self.pending_count:
+                pending_i = self.pending_cursor
+                while pending_i < self.pending_count:
+                    if Memory.read_i32(self.pending_slots + pending_i * 4) == slot:
+                        if self.pending_indices != 0:
+                            Memory.write_i32(self.pending_indices + slot * 4, pending_i)
+                        break
+                    pending_i = pending_i + 1
+            if pending_i >= self.pending_cursor and pending_i < self.pending_count:
+                old_x: i32 = Memory.read_i32(self.pending_xs + pending_i * 4)
+                old_z: i32 = Memory.read_i32(self.pending_zs + pending_i * 4)
+                if old_x != chunk_x or old_z != chunk_z:
+                    Memory.write_i32(self.pending_xs + pending_i * 4, chunk_x)
+                    Memory.write_i32(self.pending_zs + pending_i * 4, chunk_z)
+                    if self.pending_stages != 0:
+                        old_stage: i32 = Memory.read_i32(self.pending_stages + pending_i * 4)
+                        if old_stage >= 1 and old_stage <= self.generation_worker_count:
+                            # Keep the entry unavailable until the superseded
+                            # worker result is observed and discarded.
+                            Memory.write_i32(self.pending_stages + pending_i * 4, 0 - 1)
+                        else:
                             Memory.write_i32(self.pending_stages + pending_i * 4, 0)
-                        if self.mesh_job_slot == slot:
-                            self.mesh_job_restart = 1
-                    return
-                pending_i = pending_i + 1
+                    if self.mesh_job_slot == slot:
+                        self.mesh_job_restart = 1
             return
         # The toroidal slot may still carry stale seam/edit work for the chunk
         # that just left the cache. The new target supersedes that work.
         if self.dirty_flags != 0:
             Memory.write_i32(self.dirty_flags + slot * 4, 0)
+        if self.lod_priority_flags != 0:
+            Memory.write_i32(self.lod_priority_flags + slot * 4, 0)
+        if self.lod_downgrade_flags != 0:
+            Memory.write_i32(self.lod_downgrade_flags + slot * 4, 0)
         if self.urgent_flags != 0:
             Memory.write_i32(self.urgent_flags + slot * 4, 0)
         idx: i32 = self.pending_count
@@ -866,6 +1354,8 @@ attach TerrainWorld:
         Memory.write_i32(self.pending_xs + idx * 4, chunk_x)
         Memory.write_i32(self.pending_zs + idx * 4, chunk_z)
         Memory.write_i32(self.pending_flags + slot * 4, 1)
+        if self.pending_indices != 0:
+            Memory.write_i32(self.pending_indices + slot * 4, idx)
         if self.pending_stages != 0:
             Memory.write_i32(self.pending_stages + idx * 4, 0)
         self.pending_count = idx + 1
@@ -894,6 +1384,52 @@ attach TerrainWorld:
 
     fun mark_dirty_chunk_at(self, chunk_x: i32, chunk_z: i32):
         self.mark_dirty_slot(self.find_chunk_coord(chunk_x, chunk_z))
+
+    # Quality upgrades around the player must not sit behind the full
+    # render-distance generation queue. Downgrades and seam-only work remain
+    # background tasks, while these upgrades have their own bounded queue.
+    fun mark_lod_priority_slot(self, slot: i32):
+        if slot < 0 or slot >= self.chunk_count:
+            return
+        if self.lod_priority_slots == 0 or self.lod_priority_flags == 0:
+            return
+        if Memory.read_i32(self.lod_priority_flags + slot * 4) != 0:
+            return
+        if self.lod_priority_count >= self.chunk_count:
+            return
+        if self.chunk_ptr_for_slot(slot) == 0:
+            return
+        if self.lod_downgrade_flags != 0:
+            Memory.write_i32(self.lod_downgrade_flags + slot * 4, 0)
+        if self.mesh_job_slot == slot:
+            if self.mesh_job_source != 4:
+                self.mesh_job_restart = 1
+        Memory.write_i32(self.lod_priority_slots + self.lod_priority_count * 4, slot)
+        Memory.write_i32(self.lod_priority_flags + slot * 4, 1)
+        self.lod_priority_count = self.lod_priority_count + 1
+
+    # Moving away must release exact/high-quality geometry just as promptly as
+    # moving closer restores it. Keeping downgrades out of the generic seam
+    # queue prevents a permanent performance debt behind the player.
+    fun mark_lod_downgrade_slot(self, slot: i32):
+        if slot < 0 or slot >= self.chunk_count:
+            return
+        if self.lod_downgrade_slots == 0 or self.lod_downgrade_flags == 0:
+            return
+        if Memory.read_i32(self.lod_downgrade_flags + slot * 4) != 0:
+            return
+        if self.lod_downgrade_count >= self.chunk_count:
+            return
+        if self.chunk_ptr_for_slot(slot) == 0:
+            return
+        if self.lod_priority_flags != 0:
+            Memory.write_i32(self.lod_priority_flags + slot * 4, 0)
+        if self.mesh_job_slot == slot:
+            if self.mesh_job_source != 5:
+                self.mesh_job_restart = 1
+        Memory.write_i32(self.lod_downgrade_slots + self.lod_downgrade_count * 4, slot)
+        Memory.write_i32(self.lod_downgrade_flags + slot * 4, 1)
+        self.lod_downgrade_count = self.lod_downgrade_count + 1
 
     # Player edits use a separate high-priority queue. Streaming seam work
     # must never delay the visible result of breaking or placing a block.
@@ -930,6 +1466,87 @@ attach TerrainWorld:
             i = i + 1
         return 0 - 1
 
+    fun swap_pending_entries(self, first: i32, second: i32):
+        if first == second:
+            return
+        first_slot: i32 = Memory.read_i32(self.pending_slots + first * 4)
+        first_x: i32 = Memory.read_i32(self.pending_xs + first * 4)
+        first_z: i32 = Memory.read_i32(self.pending_zs + first * 4)
+        first_stage: i32 = Memory.read_i32(self.pending_stages + first * 4)
+        second_slot: i32 = Memory.read_i32(self.pending_slots + second * 4)
+        second_x: i32 = Memory.read_i32(self.pending_xs + second * 4)
+        second_z: i32 = Memory.read_i32(self.pending_zs + second * 4)
+        second_stage: i32 = Memory.read_i32(self.pending_stages + second * 4)
+        Memory.write_i32(self.pending_slots + first * 4, second_slot)
+        Memory.write_i32(self.pending_xs + first * 4, second_x)
+        Memory.write_i32(self.pending_zs + first * 4, second_z)
+        Memory.write_i32(self.pending_stages + first * 4, second_stage)
+        Memory.write_i32(self.pending_slots + second * 4, first_slot)
+        Memory.write_i32(self.pending_xs + second * 4, first_x)
+        Memory.write_i32(self.pending_zs + second * 4, first_z)
+        Memory.write_i32(self.pending_stages + second * 4, first_stage)
+        if self.pending_indices != 0:
+            Memory.write_i32(self.pending_indices + second_slot * 4, first)
+            Memory.write_i32(self.pending_indices + first_slot * 4, second)
+
+    fun promote_pending_coord(self, chunk_x: i32, chunk_z: i32, write_index: i32) -> i32:
+        next_index: i32 = write_index
+        while next_index < self.pending_count:
+            if Memory.read_i32(self.pending_stages + next_index * 4) == 0:
+                break
+            next_index = next_index + 1
+        if next_index >= self.pending_count:
+            return next_index
+        sx_mod: i32 = terrain_positive_mod(chunk_x, self.pool_grid_size)
+        sz_mod: i32 = terrain_positive_mod(chunk_z, self.pool_grid_size)
+        slot: i32 = sz_mod * self.pool_grid_size + sx_mod
+        if slot < 0 or slot >= self.chunk_count:
+            return next_index
+        if Memory.read_i32(self.pending_flags + slot * 4) == 0:
+            return next_index
+        pending_index: i32 = 0 - 1
+        if self.pending_indices != 0:
+            pending_index = Memory.read_i32(self.pending_indices + slot * 4)
+        if pending_index <= self.pending_cursor or pending_index >= self.pending_count:
+            return next_index
+        if Memory.read_i32(self.pending_stages + pending_index * 4) != 0:
+            return next_index
+        if Memory.read_i32(self.pending_xs + pending_index * 4) != chunk_x:
+            return next_index
+        if Memory.read_i32(self.pending_zs + pending_index * 4) != chunk_z:
+            return next_index
+        self.swap_pending_entries(next_index, pending_index)
+        return next_index + 1
+
+    # Rebuild only the front of the queue on a chunk crossing. The toroidal
+    # slot->queue index makes this bounded by the local rings, never by the full
+    # 129x129 cache. The active job stays untouched and the next jobs become the
+    # chunks nearest to the player's new position.
+    fun prioritize_pending_around_player(self):
+        write_index: i32 = self.pending_cursor + 1
+        radius: i32 = 0
+        while radius <= 12 and write_index < self.pending_count:
+            if radius == 0:
+                write_index = self.promote_pending_coord(self.center_chunk_x, self.center_chunk_z, write_index)
+            else:
+                min_x: i32 = self.center_chunk_x - radius
+                max_x: i32 = self.center_chunk_x + radius
+                min_z: i32 = self.center_chunk_z - radius
+                max_z: i32 = self.center_chunk_z + radius
+                x: i32 = min_x
+                while x <= max_x and write_index < self.pending_count:
+                    write_index = self.promote_pending_coord(x, min_z, write_index)
+                    if max_z != min_z:
+                        write_index = self.promote_pending_coord(x, max_z, write_index)
+                    x = x + 1
+                z: i32 = min_z + 1
+                while z < max_z and write_index < self.pending_count:
+                    write_index = self.promote_pending_coord(min_x, z, write_index)
+                    if max_x != min_x:
+                        write_index = self.promote_pending_coord(max_x, z, write_index)
+                    z = z + 1
+            radius = radius + 1
+
     fun coord_is_loaded_or_pending(self, chunk_x: i32, chunk_z: i32) -> i32:
         if self.find_chunk_coord(chunk_x, chunk_z) >= 0:
             return 1
@@ -939,7 +1556,13 @@ attach TerrainWorld:
         if slot >= 0:
             if slot < self.chunk_count:
                 if Memory.read_i32(self.pending_flags + slot * 4) != 0:
-                    return 1
+                    pending_index: i32 = 0 - 1
+                    if self.pending_indices != 0:
+                        pending_index = Memory.read_i32(self.pending_indices + slot * 4)
+                    if pending_index >= self.pending_cursor and pending_index < self.pending_count:
+                        if Memory.read_i32(self.pending_xs + pending_index * 4) == chunk_x:
+                            if Memory.read_i32(self.pending_zs + pending_index * 4) == chunk_z:
+                                return 1
         return 0
 
     fun schedule_missing_chunks(self):
@@ -1066,11 +1689,12 @@ attach TerrainWorld:
         distance: i32 = dx
         if dz > distance:
             distance = dz
-        # The editable/player ring remains exact. The outer 74% of the view
-        # uses 4x and 8x surface steps, where projected voxel size is tiny.
-        if distance <= 6:
+        # A 40-block chunk is 2.5x wider than a Minecraft chunk. Radius 4 keeps
+        # a 9x9 / 360x360-block exact-quality volume around the player while the
+        # outer 120-chunk-wide view remains aggressively simplified.
+        if distance <= 4:
             return 0
-        if distance <= 11:
+        if distance <= 10:
             return 1
         return 2
 
@@ -1086,15 +1710,17 @@ attach TerrainWorld:
             distance = dz
         current: i32 = chunk.target_lod
         if current <= 0:
-            if distance <= 7:
-                return 0
-        elif current == 1:
+            # One-chunk exit hysteresis prevents boundary thrashing while the
+            # player moves back and forth across the exact-quality edge.
             if distance <= 5:
                 return 0
-            if distance <= 12:
+        elif current == 1:
+            if distance <= 4:
+                return 0
+            if distance <= 11:
                 return 1
         else:
-            if distance >= 10:
+            if distance >= 9:
                 return 2
         return self.raw_lod_for_coord(chunk_x, chunk_z)
 
@@ -1127,9 +1753,8 @@ attach TerrainWorld:
             mask = mask + 8
         return mask
 
-    # Re-evaluate only when the player crosses a chunk boundary. Changed rings
-    # join the existing background remesh queue, so there is no mass upload or
-    # main-thread spike when a new row enters the view.
+    # Re-evaluate only when the player crosses a chunk boundary. Upgrades and
+    # downgrades use separate priority queues; seam-only work stays background.
     fun schedule_lod_transitions(self):
         slot: i32 = 0
         while slot < self.chunk_count:
@@ -1140,15 +1765,21 @@ attach TerrainWorld:
                 chunk_z: i32 = Memory.read_i32(self.chunk_world_zs + slot * 4)
                 if self.coord_is_visible(chunk_x, chunk_z) == 1:
                     next_lod: i32 = self.hysteresis_lod_for_chunk(chunk, chunk_x, chunk_z)
+                    target_changed: i32 = 0
                     if next_lod != chunk.target_lod:
                         chunk.target_lod = next_lod
+                        target_changed = 1
                         if self.mesh_job_slot == slot:
                             self.mesh_job_restart = 1
-                        pending: i32 = 0
-                        if self.pending_flags != 0:
-                            pending = Memory.read_i32(self.pending_flags + slot * 4)
-                        if pending == 0:
-                            self.mark_dirty_slot(slot)
+                    pending: i32 = 0
+                    if self.pending_flags != 0:
+                        pending = Memory.read_i32(self.pending_flags + slot * 4)
+                    if pending == 0:
+                        if chunk.mesh_lod > next_lod:
+                            self.mark_lod_priority_slot(slot)
+                        elif chunk.mesh_lod < next_lod:
+                            self.mark_lod_downgrade_slot(slot)
+                    if target_changed == 1:
                         # A neighboring coarser chunk may gain or lose the one
                         # transition skirt that stitches this shared edge.
                         self.mark_stream_neighbor_dirty(chunk_x - 1, chunk_z)
@@ -1199,6 +1830,28 @@ attach TerrainWorld:
         chunk.target_lod = self.raw_lod_for_coord(chunk_x, chunk_z)
         return 1
 
+    fun commit_generated_blocks(self, slot: i32, worker_index: i32) -> i32:
+        if worker_index < 0 or worker_index >= self.generation_worker_count:
+            return 0
+        scratch_ptr: i64 = Memory.read_ptr(self.generation_scratch_ptrs + (worker_index as i64) * 8)
+        if scratch_ptr == 0:
+            return 0
+        ptr: i64 = self.chunk_ptr_for_slot(slot)
+        if ptr == 0:
+            return 0
+        chunk: VoxelChunk = ptr as VoxelChunk
+        scratch: VoxelChunk = scratch_ptr as VoxelChunk
+        if chunk.copy_blocks_from(scratch) == 0:
+            return 0
+        terrain_configure_palette(chunk)
+        chunk_x: i32 = Memory.read_i32(self.chunk_world_xs + slot * 4)
+        chunk_z: i32 = Memory.read_i32(self.chunk_world_zs + slot * 4)
+        origin_x: i32 = chunk_x * self.chunk_size
+        origin_z: i32 = chunk_z * self.chunk_size
+        chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
+        chunk.target_lod = self.raw_lod_for_coord(chunk_x, chunk_z)
+        return 1
+
     fun refresh_chunk_mesh_at(self, chunk_x: i32, chunk_z: i32) -> i32:
         slot: i32 = self.find_chunk_coord(chunk_x, chunk_z)
         if slot < 0:
@@ -1221,6 +1874,23 @@ attach TerrainWorld:
         origin_z: i32 = chunk_z * self.chunk_size
         chunk.set_position(origin_x as f32, 0.02, origin_z as f32)
         job_lod: i32 = chunk.target_lod
+        if source == 1:
+            dx: i32 = chunk_x - self.center_chunk_x
+            dz: i32 = chunk_z - self.center_chunk_z
+            if dx < 0:
+                dx = 0 - dx
+            if dz < 0:
+                dz = 0 - dz
+            distance: i32 = dx
+            if dz > distance:
+                distance = dz
+            # Progressive first visibility: preserve collision/exact quality in
+            # the immediate 5x5, but show the rest one cheap level earlier. The
+            # full target mesh is refined in parallel with the next generation.
+            if job_lod <= 0 and distance > 2:
+                job_lod = 1
+            elif job_lod == 1:
+                job_lod = 2
         job_skirt_mask: i32 = self.lod_skirt_mask_for_coord(chunk_x, chunk_z, job_lod)
 
         # Windows currently has real Dolet threads. Build against an immutable
@@ -1243,6 +1913,7 @@ attach TerrainWorld:
                         self.mesh_job_slot = slot
                         self.mesh_job_face = 0
                         self.mesh_job_face_count = 0
+                        self.mesh_job_vegetation_face_count = 0
                         self.mesh_job_source = source
                         self.mesh_job_lod = job_lod
                         self.mesh_job_skirt_mask = job_skirt_mask
@@ -1260,6 +1931,7 @@ attach TerrainWorld:
         self.mesh_job_slot = slot
         self.mesh_job_face = 0
         self.mesh_job_face_count = 0
+        self.mesh_job_vegetation_face_count = 0
         self.mesh_job_source = source
         self.mesh_job_lod = job_lod
         self.mesh_job_skirt_mask = job_skirt_mask
@@ -1271,6 +1943,8 @@ attach TerrainWorld:
         if self.mesh_job_source == 1:
             if self.pending_flags != 0:
                 Memory.write_i32(self.pending_flags + slot * 4, 0)
+            if self.pending_indices != 0:
+                Memory.write_i32(self.pending_indices + slot * 4, 0 - 1)
             if self.pending_stages != 0:
                 Memory.write_i32(self.pending_stages + self.pending_cursor * 4, 0)
             self.pending_cursor = self.pending_cursor + 1
@@ -1278,6 +1952,15 @@ attach TerrainWorld:
                 self.pending_count = 0
                 self.pending_cursor = 0
             self.stream_debug_uploads = self.stream_debug_uploads + 1
+            self.stream_new_mesh_streak = self.stream_new_mesh_streak + 1
+            ptr: i64 = self.chunk_ptr_for_slot(slot)
+            if ptr != 0:
+                chunk: VoxelChunk = ptr as VoxelChunk
+                if chunk.mesh_lod != chunk.target_lod:
+                    if chunk.target_lod <= 0:
+                        self.mark_lod_priority_slot(slot)
+                    else:
+                        self.mark_dirty_slot(slot)
         elif self.mesh_job_source == 2:
             if self.dirty_flags != 0:
                 Memory.write_i32(self.dirty_flags + slot * 4, 0)
@@ -1286,17 +1969,49 @@ attach TerrainWorld:
                 self.dirty_count = 0
                 self.dirty_cursor = 0
             self.stream_debug_dirty_uploads = self.stream_debug_dirty_uploads + 1
+            self.stream_new_mesh_streak = 0
         elif self.mesh_job_source == 3:
             if self.urgent_flags != 0:
                 Memory.write_i32(self.urgent_flags + slot * 4, 0)
             # The urgent build also satisfies any older seam-dirty request.
             if self.dirty_flags != 0:
                 Memory.write_i32(self.dirty_flags + slot * 4, 0)
+            if self.lod_priority_flags != 0:
+                Memory.write_i32(self.lod_priority_flags + slot * 4, 0)
+            if self.lod_downgrade_flags != 0:
+                Memory.write_i32(self.lod_downgrade_flags + slot * 4, 0)
             self.urgent_cursor = self.urgent_cursor + 1
             if self.urgent_cursor >= self.urgent_count:
                 self.urgent_count = 0
                 self.urgent_cursor = 0
             self.stream_debug_dirty_uploads = self.stream_debug_dirty_uploads + 1
+            self.stream_new_mesh_streak = 0
+        elif self.mesh_job_source == 4:
+            if self.lod_priority_flags != 0:
+                Memory.write_i32(self.lod_priority_flags + slot * 4, 0)
+            if self.lod_downgrade_flags != 0:
+                Memory.write_i32(self.lod_downgrade_flags + slot * 4, 0)
+            if self.dirty_flags != 0:
+                Memory.write_i32(self.dirty_flags + slot * 4, 0)
+            self.lod_priority_cursor = self.lod_priority_cursor + 1
+            if self.lod_priority_cursor >= self.lod_priority_count:
+                self.lod_priority_count = 0
+                self.lod_priority_cursor = 0
+            self.stream_debug_dirty_uploads = self.stream_debug_dirty_uploads + 1
+            self.stream_new_mesh_streak = 0
+        elif self.mesh_job_source == 5:
+            if self.lod_downgrade_flags != 0:
+                Memory.write_i32(self.lod_downgrade_flags + slot * 4, 0)
+            if self.lod_priority_flags != 0:
+                Memory.write_i32(self.lod_priority_flags + slot * 4, 0)
+            if self.dirty_flags != 0:
+                Memory.write_i32(self.dirty_flags + slot * 4, 0)
+            self.lod_downgrade_cursor = self.lod_downgrade_cursor + 1
+            if self.lod_downgrade_cursor >= self.lod_downgrade_count:
+                self.lod_downgrade_count = 0
+                self.lod_downgrade_cursor = 0
+            self.stream_debug_dirty_uploads = self.stream_debug_dirty_uploads + 1
+            self.stream_new_mesh_streak = 0
 
     fun cancel_mesh_job(self):
         if self.mesh_async_snapshot_ptr != 0:
@@ -1305,6 +2020,7 @@ attach TerrainWorld:
         self.mesh_job_slot = -1
         self.mesh_job_face = 0
         self.mesh_job_face_count = 0
+        self.mesh_job_vegetation_face_count = 0
         self.mesh_job_source = 0
         self.mesh_job_lod = 0
         self.mesh_job_skirt_mask = 0
@@ -1324,6 +2040,9 @@ attach TerrainWorld:
                     missing_state.store(0)
             self.finish_mesh_job_queue(self.mesh_job_slot)
             self.mesh_job_slot = -1
+            self.mesh_job_face = 0
+            self.mesh_job_face_count = 0
+            self.mesh_job_vegetation_face_count = 0
             self.mesh_job_source = 0
             self.mesh_job_lod = 0
             self.mesh_job_skirt_mask = 0
@@ -1340,6 +2059,7 @@ attach TerrainWorld:
                 self.mesh_job_slot = -1
                 self.mesh_job_face = 0
                 self.mesh_job_face_count = 0
+                self.mesh_job_vegetation_face_count = 0
                 self.mesh_job_source = 0
                 self.mesh_job_lod = 0
                 self.mesh_job_skirt_mask = 0
@@ -1353,12 +2073,18 @@ attach TerrainWorld:
                 live_chunk.mesh_lod = self.mesh_job_lod
                 live_chunk.mesh_skirt_mask = self.mesh_job_skirt_mask
                 self.bind_terrain_material(async_mesh_id)
+            if self.mesh_async_vegetation_workspace_ptr != 0:
+                async_vegetation_workspace: VoxelMeshWorkspace = self.mesh_async_vegetation_workspace_ptr as VoxelMeshWorkspace
+                vegetation_mesh_id: i32 = live_chunk.upload_vegetation_workspace(async_vegetation_workspace, self.mesh_job_vegetation_face_count)
+                if self.mesh_job_vegetation_face_count > 0:
+                    self.bind_vegetation_material(vegetation_mesh_id)
             async_faces: i32 = live_chunk.last_face_count
             async_slot: i32 = self.mesh_job_slot
             self.finish_mesh_job_queue(async_slot)
             self.mesh_job_slot = -1
             self.mesh_job_face = 0
             self.mesh_job_face_count = 0
+            self.mesh_job_vegetation_face_count = 0
             self.mesh_job_source = 0
             self.mesh_job_lod = 0
             self.mesh_job_skirt_mask = 0
@@ -1383,23 +2109,35 @@ attach TerrainWorld:
             self.mesh_job_slot = -1
             self.mesh_job_face = 0
             self.mesh_job_face_count = 0
+            self.mesh_job_vegetation_face_count = 0
             self.mesh_job_source = 0
             self.mesh_job_lod = 0
             self.mesh_job_skirt_mask = 0
             self.mesh_job_restart = 0
             return 0
 
+        self.mesh_job_vegetation_face_count = 0
+        if self.mesh_job_lod <= 0:
+            if self.mesh_vegetation_workspace_ptr != 0:
+                vegetation_workspace: VoxelMeshWorkspace = self.mesh_vegetation_workspace_ptr as VoxelMeshWorkspace
+                self.mesh_job_vegetation_face_count = chunk.build_vegetation_mesh_into(vegetation_workspace, self.seed, terrain_grass())
         mesh_id: i32 = chunk.upload_workspace_mesh(workspace, self.mesh_job_face_count)
         if mesh_id >= 0:
             chunk.mesh_lod = self.mesh_job_lod
             chunk.mesh_skirt_mask = self.mesh_job_skirt_mask
             self.bind_terrain_material(mesh_id)
+        if self.mesh_vegetation_workspace_ptr != 0:
+            vegetation_workspace2: VoxelMeshWorkspace = self.mesh_vegetation_workspace_ptr as VoxelMeshWorkspace
+            vegetation_mesh_id2: i32 = chunk.upload_vegetation_workspace(vegetation_workspace2, self.mesh_job_vegetation_face_count)
+            if self.mesh_job_vegetation_face_count > 0:
+                self.bind_vegetation_material(vegetation_mesh_id2)
         faces: i32 = chunk.last_face_count
         slot: i32 = self.mesh_job_slot
         self.finish_mesh_job_queue(slot)
         self.mesh_job_slot = -1
         self.mesh_job_face = 0
         self.mesh_job_face_count = 0
+        self.mesh_job_vegetation_face_count = 0
         self.mesh_job_source = 0
         self.mesh_job_lod = 0
         self.mesh_job_skirt_mask = 0
@@ -1433,6 +2171,14 @@ attach TerrainWorld:
         chunk.mesh_lod = chunk.target_lod
         chunk.mesh_skirt_mask = self.lod_skirt_mask_for_coord(chunk_x, chunk_z, chunk.target_lod)
         self.bind_terrain_material(mesh_id)
+        if self.mesh_vegetation_workspace_ptr != 0:
+            vegetation_workspace: VoxelMeshWorkspace = self.mesh_vegetation_workspace_ptr as VoxelMeshWorkspace
+            vegetation_faces: i32 = 0
+            if chunk.target_lod <= 0:
+                vegetation_faces = chunk.build_vegetation_mesh_into(vegetation_workspace, self.seed, terrain_grass())
+            vegetation_mesh_id: i32 = chunk.upload_vegetation_workspace(vegetation_workspace, vegetation_faces)
+            if vegetation_faces > 0:
+                self.bind_vegetation_material(vegetation_mesh_id)
         return chunk.last_face_count
 
     fun report_stream_debug(self, elapsed_ms: f64):
@@ -1442,9 +2188,44 @@ attach TerrainWorld:
         self.stream_debug_accum_ms = self.stream_debug_accum_ms + elapsed_ms
         if elapsed_ms > self.stream_debug_max_ms:
             self.stream_debug_max_ms = elapsed_ms
-        if self.stream_debug_frames >= 180:
+        now: f64 = engine_time_seconds()
+        if now >= self.stream_debug_next_report:
             avg_ms: f64 = self.stream_debug_accum_ms / (self.stream_debug_frames as f64)
-            msg: str = "[terrain.stream] frames=" + Convert.i32_to_str(self.stream_debug_frames)
+            loaded: i32 = 0
+            stale_up: i32 = 0
+            stale_down: i32 = 0
+            scan: i32 = 0
+            while scan < self.chunk_count:
+                ptr: i64 = self.chunk_ptr_for_slot(scan)
+                if ptr != 0:
+                    chunk: VoxelChunk = ptr as VoxelChunk
+                    if chunk.mesh_id >= 0:
+                        loaded = loaded + 1
+                        if chunk.mesh_lod > chunk.target_lod:
+                            stale_up = stale_up + 1
+                        elif chunk.mesh_lod < chunk.target_lod:
+                            stale_down = stale_down + 1
+                scan = scan + 1
+            pending_left: i32 = self.pending_count - self.pending_cursor
+            dirty_left: i32 = self.dirty_count - self.dirty_cursor
+            priority_left: i32 = self.lod_priority_count - self.lod_priority_cursor
+            downgrade_left: i32 = self.lod_downgrade_count - self.lod_downgrade_cursor
+            urgent_left: i32 = self.urgent_count - self.urgent_cursor
+            msg: str = "[terrain.stream] pos=(" + Convert.f64_to_str(self.stream_debug_player_x as f64)
+            msg = msg + "," + Convert.f64_to_str(self.stream_debug_player_z as f64) + ")"
+            msg = msg + " chunk=(" + Convert.i32_to_str(self.center_chunk_x)
+            msg = msg + "," + Convert.i32_to_str(self.center_chunk_z) + ")"
+            msg = msg + " loaded=" + Convert.i32_to_str(loaded)
+            msg = msg + " pending=" + Convert.i32_to_str(pending_left)
+            msg = msg + " lodQ=" + Convert.i32_to_str(priority_left)
+            msg = msg + " downQ=" + Convert.i32_to_str(downgrade_left)
+            msg = msg + " dirty=" + Convert.i32_to_str(dirty_left)
+            msg = msg + " urgent=" + Convert.i32_to_str(urgent_left)
+            msg = msg + " staleUp=" + Convert.i32_to_str(stale_up)
+            msg = msg + " staleDown=" + Convert.i32_to_str(stale_down)
+            msg = msg + " job=" + Convert.i32_to_str(self.mesh_job_source)
+            msg = msg + "/" + Convert.i32_to_str(self.mesh_job_lod)
+            msg = msg + " frames=" + Convert.i32_to_str(self.stream_debug_frames)
             msg = msg + " pendingPeak=" + Convert.i32_to_str(self.stream_debug_pending_peak)
             msg = msg + " gen=" + Convert.i32_to_str(self.stream_debug_generates)
             msg = msg + " upload=" + Convert.i32_to_str(self.stream_debug_uploads)
@@ -1459,6 +2240,7 @@ attach TerrainWorld:
             self.stream_debug_pending_peak = self.pending_count
             self.stream_debug_accum_ms = 0.0
             self.stream_debug_max_ms = 0.0
+            self.stream_debug_next_report = now + 1.0
 
     fun process_dirty_meshes(self) -> i32:
         while self.dirty_cursor < self.dirty_count:
@@ -1490,34 +2272,159 @@ attach TerrainWorld:
         self.urgent_cursor = 0
         return 0
 
+    fun process_lod_priority_meshes(self) -> i32:
+        while self.lod_priority_cursor < self.lod_priority_count:
+            slot: i32 = Memory.read_i32(self.lod_priority_slots + self.lod_priority_cursor * 4)
+            if self.lod_priority_flags != 0:
+                if Memory.read_i32(self.lod_priority_flags + slot * 4) == 0:
+                    self.lod_priority_cursor = self.lod_priority_cursor + 1
+                else:
+                    self.start_mesh_job(slot, 4)
+                    return 0
+            else:
+                self.lod_priority_cursor = self.lod_priority_cursor + 1
+        self.lod_priority_count = 0
+        self.lod_priority_cursor = 0
+        return 0
+
+    fun process_lod_downgrade_meshes(self) -> i32:
+        while self.lod_downgrade_cursor < self.lod_downgrade_count:
+            slot: i32 = Memory.read_i32(self.lod_downgrade_slots + self.lod_downgrade_cursor * 4)
+            if self.lod_downgrade_flags != 0:
+                if Memory.read_i32(self.lod_downgrade_flags + slot * 4) == 0:
+                    self.lod_downgrade_cursor = self.lod_downgrade_cursor + 1
+                else:
+                    self.start_mesh_job(slot, 5)
+                    return 0
+            else:
+                self.lod_downgrade_cursor = self.lod_downgrade_cursor + 1
+        self.lod_downgrade_count = 0
+        self.lod_downgrade_cursor = 0
+        return 0
+
+    # Publish at most one completed density result per frame, then refill every
+    # idle worker. This gives multi-core throughput without synchronized memcpy
+    # bursts on the render thread.
+    fun pump_generation_jobs(self):
+        published: i32 = 0
+        worker_index: i32 = 0
+        while worker_index < self.generation_worker_count:
+            state_ptr: i64 = Memory.read_ptr(self.generation_worker_state_ptrs + (worker_index as i64) * 8)
+            if state_ptr != 0:
+                state: AtomicI32 = state_ptr as AtomicI32
+                if state.load() == 3 and published == 0:
+                    pending_index: i32 = Memory.read_i32(self.generation_job_indices + worker_index * 4)
+                    job_x: i32 = Memory.read_i32(self.generation_job_chunk_xs + worker_index * 4)
+                    job_z: i32 = Memory.read_i32(self.generation_job_chunk_zs + worker_index * 4)
+                    valid: i32 = 0
+                    if pending_index >= self.pending_cursor and pending_index < self.pending_count:
+                        stage: i32 = Memory.read_i32(self.pending_stages + pending_index * 4)
+                        wanted_x: i32 = Memory.read_i32(self.pending_xs + pending_index * 4)
+                        wanted_z: i32 = Memory.read_i32(self.pending_zs + pending_index * 4)
+                        if stage == worker_index + 1:
+                            if wanted_x == job_x and wanted_z == job_z:
+                                valid = 1
+                    if valid == 1:
+                        slot: i32 = Memory.read_i32(self.pending_slots + pending_index * 4)
+                        if self.commit_generated_blocks(slot, worker_index) == 1:
+                            Memory.write_i32(self.pending_stages + pending_index * 4, 5)
+                            self.stream_debug_generates = self.stream_debug_generates + 1
+                            self.visibility_dirty = 1
+                            self.visibility_next_refresh = 0.0
+                            published = 1
+                        else:
+                            Memory.write_i32(self.pending_stages + pending_index * 4, 0)
+                    else:
+                        if pending_index >= self.pending_cursor and pending_index < self.pending_count:
+                            stale_stage: i32 = Memory.read_i32(self.pending_stages + pending_index * 4)
+                            if stale_stage == worker_index + 1 or stale_stage == 0 - 1:
+                                Memory.write_i32(self.pending_stages + pending_index * 4, 0)
+                    Memory.write_i32(self.generation_job_indices + worker_index * 4, 0 - 1)
+                    state.store(0)
+            worker_index = worker_index + 1
+
+        # Fill every idle core from the spatially prioritized queue. Generated
+        # entries may finish out of order; meshes still publish in queue order.
+        worker_index = 0
+        while worker_index < self.generation_worker_count:
+            state_ptr2: i64 = Memory.read_ptr(self.generation_worker_state_ptrs + (worker_index as i64) * 8)
+            if state_ptr2 != 0:
+                state2: AtomicI32 = state_ptr2 as AtomicI32
+                if state2.load() == 0:
+                    # Keep only a small generated lead over the mesher. Four
+                    # workers can produce hundreds of chunks/sec; allowing an
+                    # unbounded lead wastes CPU and lowers gameplay FPS without
+                    # making terrain visible sooner.
+                    prefetch_end: i32 = self.pending_cursor + 12
+                    if prefetch_end > self.pending_count:
+                        prefetch_end = self.pending_count
+                    candidate: i32 = self.pending_cursor
+                    while candidate < prefetch_end:
+                        if Memory.read_i32(self.pending_stages + candidate * 4) == 0:
+                            break
+                        candidate = candidate + 1
+                    if candidate < prefetch_end:
+                        slot2: i32 = Memory.read_i32(self.pending_slots + candidate * 4)
+                        chunk_x: i32 = Memory.read_i32(self.pending_xs + candidate * 4)
+                        chunk_z: i32 = Memory.read_i32(self.pending_zs + candidate * 4)
+                        old_ptr: i64 = self.chunk_ptr_for_slot(slot2)
+                        if old_ptr != 0:
+                            old_chunk: VoxelChunk = old_ptr as VoxelChunk
+                            old_chunk.set_render_visible(0)
+                        self.ensure_slot_target(slot2, chunk_x, chunk_z)
+                        Memory.write_i32(self.generation_job_chunk_xs + worker_index * 4, chunk_x)
+                        Memory.write_i32(self.generation_job_chunk_zs + worker_index * 4, chunk_z)
+                        Memory.write_i32(self.generation_job_indices + worker_index * 4, candidate)
+                        Memory.write_i32(self.pending_stages + candidate * 4, worker_index + 1)
+                        state2.store(1)
+            worker_index = worker_index + 1
+
+    fun generation_job_is_waiting(self) -> i32:
+        if self.pending_cursor >= self.pending_count:
+            return 0
+        if self.pending_stages == 0:
+            return 0
+        stage: i32 = Memory.read_i32(self.pending_stages + self.pending_cursor * 4)
+        if stage == 0 - 1:
+            return 1
+        if stage >= 1 and stage <= self.generation_worker_count:
+            return 1
+        return 0
+
     fun process_pending_stage(self) -> i32:
         if self.pending_cursor >= self.pending_count:
             self.pending_count = 0
             self.pending_cursor = 0
             return 0
-        # Complete one nearby target through generate -> link -> mesh before
-        # advancing. Ring-ordered scheduling makes useful terrain appear near
-        # the player immediately even with very large view distances.
+        # Complete one nearby target through async generate -> link -> mesh.
+        # Expensive density noise never runs inside the render frame.
         idx: i32 = self.pending_cursor
         stage: i32 = Memory.read_i32(self.pending_stages + idx * 4)
         current_slot: i32 = Memory.read_i32(self.pending_slots + idx * 4)
         if stage == 0:
+            if self.generation_worker_count > 0:
+                self.pump_generation_jobs()
+                return 0
+            # Portable fallback for platforms without Dolet threads.
             chunk_x: i32 = Memory.read_i32(self.pending_xs + idx * 4)
             chunk_z: i32 = Memory.read_i32(self.pending_zs + idx * 4)
             self.prepare_slot_target(current_slot, chunk_x, chunk_z)
-            Memory.write_i32(self.pending_stages + idx * 4, 1)
+            Memory.write_i32(self.pending_stages + idx * 4, 5)
             return 0
-        if stage == 1:
+        if stage == 0 - 1 or stage >= 1 and stage <= self.generation_worker_count:
+            return 0
+        if stage == 5:
             chunk_x2: i32 = Memory.read_i32(self.pending_xs + idx * 4)
             chunk_z2: i32 = Memory.read_i32(self.pending_zs + idx * 4)
             self.relink_slot_target(chunk_x2, chunk_z2)
-            Memory.write_i32(self.pending_stages + idx * 4, 2)
+            Memory.write_i32(self.pending_stages + idx * 4, 6)
             return 0
         self.start_mesh_job(current_slot, 1)
         return 0
 
     fun process_streaming(self) -> i32:
         start_time: f64 = engine_time_seconds()
+        self.pump_generation_jobs()
         faces_total: i32 = 0
         if self.urgent_cursor < self.urgent_count:
             if self.mesh_job_slot >= 0:
@@ -1530,7 +2437,36 @@ attach TerrainWorld:
         elif self.mesh_job_slot >= 0:
             faces_total = self.process_mesh_job()
         elif self.pending_cursor < self.pending_count:
-            faces_total = self.process_pending_stage()
+            # Start/advance generation before optional quality work. While the
+            # density worker runs, use the independent mesh worker for upgrades
+            # and seam maintenance. Neither pipeline can starve the other.
+            if self.generation_job_is_waiting() == 1:
+                if self.lod_priority_cursor < self.lod_priority_count:
+                    faces_total = self.process_lod_priority_meshes()
+                elif self.lod_downgrade_cursor < self.lod_downgrade_count:
+                    faces_total = self.process_lod_downgrade_meshes()
+                elif self.dirty_cursor < self.dirty_count:
+                    faces_total = self.process_dirty_meshes()
+                else:
+                    faces_total = self.process_pending_stage()
+            elif self.lod_priority_cursor < self.lod_priority_count:
+                # Quality near the new player position gets the next free mesh
+                # slot, but never cancels a first-visibility mesh in progress.
+                faces_total = self.process_lod_priority_meshes()
+            elif self.lod_downgrade_cursor < self.lod_downgrade_count:
+                # Coarsen terrain behind the player before accumulating more
+                # high-detail geometry and draw cost.
+                faces_total = self.process_lod_downgrade_meshes()
+            elif self.stream_new_mesh_streak >= 3 and self.dirty_cursor < self.dirty_count:
+                # Three new visible chunks per one refinement prevents both
+                # holes and permanently coarse terrain during continuous load.
+                faces_total = self.process_dirty_meshes()
+            else:
+                faces_total = self.process_pending_stage()
+        elif self.lod_priority_cursor < self.lod_priority_count:
+            faces_total = self.process_lod_priority_meshes()
+        elif self.lod_downgrade_cursor < self.lod_downgrade_count:
+            faces_total = self.process_lod_downgrade_meshes()
         else:
             faces_total = self.process_dirty_meshes()
         elapsed_ms: f64 = (engine_time_seconds() - start_time) * 1000.0
@@ -1668,7 +2604,9 @@ attach TerrainWorld:
             return 0
         self.total_faces = 0
         half_grid: i32 = self.grid_size / 2
-        bootstrap_radius: i32 = 2
+        # Only the immediate 3x3 ring is synchronous so the player never sees
+        # a hole at spawn. Every farther chunk is generated by the worker.
+        bootstrap_radius: i32 = 1
         if bootstrap_radius > half_grid:
             bootstrap_radius = half_grid
         bootstrap_size: i32 = bootstrap_radius * 2 + 1
@@ -1721,6 +2659,8 @@ attach TerrainWorld:
         self.center_chunk_z = 0
         self.clear_pending()
         self.clear_dirty()
+        self.clear_lod_priority()
+        self.clear_lod_downgrades()
         self.clear_urgent()
         self.stream_debug_frames = 0
         self.stream_debug_generates = 0
@@ -1729,10 +2669,14 @@ attach TerrainWorld:
         self.stream_debug_pending_peak = 0
         self.stream_debug_accum_ms = 0.0
         self.stream_debug_max_ms = 0.0
+        self.stream_debug_next_report = 0.0
+        self.stream_new_mesh_streak = 0
         self.load_grass_texture()
         return self.rebuild_visible_chunks()
 
     fun update_around(self, player_x: f32, player_z: f32) -> i32:
+        self.stream_debug_player_x = player_x
+        self.stream_debug_player_z = player_z
         new_center_x: i32 = terrain_chunk_coord(player_x, self.chunk_size)
         new_center_z: i32 = terrain_chunk_coord(player_z, self.chunk_size)
         if new_center_x == self.center_chunk_x:
@@ -1743,5 +2687,6 @@ attach TerrainWorld:
         self.center_chunk_x = new_center_x
         self.center_chunk_z = new_center_z
         self.schedule_shifted_chunks(old_center_x, old_center_z, new_center_x, new_center_z)
+        self.prioritize_pending_around_player()
         self.schedule_lod_transitions()
         return self.process_streaming()
