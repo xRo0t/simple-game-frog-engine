@@ -57,6 +57,51 @@ fun update_sun_debug_controls(dt: f32):
     cycle.set_time(phase)
     scene.update_day_cycle(0.0)
 
+fun spawn_fruit_showcase(terrain: TerrainWorld, player: PlayerNode) -> Mesh3D:
+    # Keep the first integration deliberately game-side: this is one static
+    # showcase instance of the standalone cooked asset, not engine behavior.
+    # It rests four metres in front of the initial player direction.
+    fruit_x: f32 = player.pos_x - 0.20
+    fruit_z: f32 = player.pos_z - 4.0
+    ground_y: f32 = terrain.highest_solid_top_for_aabb(
+        fruit_x - 0.8,
+        fruit_z - 0.4,
+        fruit_x + 0.8,
+        fruit_z + 0.4,
+        0.0,
+        terrain.chunk_height as f32
+    )
+    if ground_y < 0.0 - 99999.0:
+        ground_y = player.pos_y - player.eye_height
+
+    leaf_texture: Texture2D = Assets.textures.load("textures/terrain/fruit_leaves.png", TextureSpec.pixel())
+    if leaf_texture.ready == 0:
+        print("Fruit leaf texture load failed: " + leaf_texture.error)
+    leaf_material: Material3D = Material3D.textured(leaf_texture)
+    leaf_material.set_alpha_clip(1)
+    leaf_material.set_double_sided(1)
+    leaf_material.set_roughness(1.0)
+    fruit_materials: ModelMaterials = ModelMaterials.create()
+    fruit_materials.set("Leaf_Card", leaf_material)
+    # Cooked FrogModel part 2 is Leaf_Card in every bundled LOD. Keeping an
+    # index binding as well makes the texture robust even if a future cooker
+    # build strips or rewrites the authored material name.
+    fruit_materials.set(2, leaf_material)
+    # ModelMaterials must exist before set_model(). Otherwise Frog takes the
+    # fast single-mesh path and the Leaf_Card material slot no longer exists as
+    # an independently bindable GPU part.
+    fruit: Mesh3D = Mesh3D.create("Fruit Showcase")
+    fruit.set_model_materials(fruit_materials)
+    fruit.set_model(Assets.models.load("models/fruit/scene.frogmodel"))
+    # The fruit body now rests on the terrain while its horizontal leaf card
+    # stays slightly above the surface to avoid clipping and z-fighting.
+    fruit.position(fruit_x, ground_y + 0.30, fruit_z)
+    fruit.scale(0.80, 0.80, 0.80)
+    fruit.as_static()
+    Engine.scene.current().add_child(fruit)
+    print(@"Fruit showcase spawned at {fruit_x}, {ground_y}, {fruit_z}")
+    return fruit
+
 attach Engine:
 
     static fun run():
@@ -87,6 +132,7 @@ attach Engine:
         player: PlayerNode = spawn_player(0.0, 4.0, 0.0)
         snap_player_to_terrain(player, terrain)
         camera: Camera3D = Engine.scene.camera()
+        fruit: Mesh3D = spawn_fruit_showcase(terrain, player)
         gun: GunNode = spawn_gun_textured("models/gun/scene.gltf", "models/gun/textures/1911_baseColor.png")
         bullets: BulletPool = spawn_bullet_pool("models/bullet.gltf", 64)
 
@@ -142,6 +188,7 @@ attach Engine:
         bullet_cleanup(bullets)
         goblin_cleanup(goblins)
         gun.destroy()
+        fruit.destroy()
         player.destroy()
         earth.destroy()
         Engine.destroy_scene()

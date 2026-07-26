@@ -6,6 +6,7 @@ build/
 dist/
 .obin/
 *.frogmodel
+!assets/models/fruit/scene.frogmodel
 
 # Compiler intermediates left next to sources
 *.obj
