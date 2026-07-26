@@ -5,7 +5,7 @@
 
 import world.terrain
 
-imm TERRAIN_VIEW_DISTANCE_CHUNKS: i32 = 64
+imm TERRAIN_VIEW_DISTANCE_CHUNKS: i32 = 24#64
 
 @heap struct EarthNode:
     id: i32 = -1

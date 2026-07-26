@@ -832,6 +832,32 @@ fun voxel_write_vegetation_quad(vertices: i64, indices: i64, face_index: i32, ce
     Memory.write_i32(indices + ioff + 20, base_vertex + 3)
     return face_index + 1
 
+# A fully oriented card. Sunflower heads use this to keep their own stable
+# world direction and upward tilt, so the front, thin side, and green rear are
+# all visible naturally without camera-facing billboards or per-frame work.
+fun voxel_write_oriented_vegetation_quad(vertices: i64, indices: i64, face_index: i32, center_x: f32, center_y: f32, center_z: f32, right_x: f32, right_y: f32, right_z: f32, up_x: f32, up_y: f32, up_z: f32, normal_x: f32, normal_y: f32, normal_z: f32, color_r: f32, color_g: f32, color_b: f32, uv_u0: f32, uv_v0: f32, uv_u1: f32, uv_v1: f32) -> i32:
+    base_vertex: i32 = face_index * 4
+    off: i64 = (base_vertex as i64) * (FROG_GPU_VERTEX_STRIDE as i64)
+
+    off = gpu_wv(vertices, off, center_x - right_x - up_x, center_y - right_y - up_y, center_z - right_z - up_z, color_r, color_g, color_b, uv_u0, uv_v1)
+    off = gpu_wv(vertices, off, center_x - right_x + up_x, center_y - right_y + up_y, center_z - right_z + up_z, color_r, color_g, color_b, uv_u0, uv_v0)
+    off = gpu_wv(vertices, off, center_x + right_x + up_x, center_y + right_y + up_y, center_z + right_z + up_z, color_r, color_g, color_b, uv_u1, uv_v0)
+    off = gpu_wv(vertices, off, center_x + right_x - up_x, center_y + right_y - up_y, center_z + right_z - up_z, color_r, color_g, color_b, uv_u1, uv_v1)
+
+    gpu_write_vertex_normal(vertices, base_vertex, normal_x, normal_y, normal_z)
+    gpu_write_vertex_normal(vertices, base_vertex + 1, normal_x, normal_y, normal_z)
+    gpu_write_vertex_normal(vertices, base_vertex + 2, normal_x, normal_y, normal_z)
+    gpu_write_vertex_normal(vertices, base_vertex + 3, normal_x, normal_y, normal_z)
+
+    ioff: i64 = (face_index as i64) * 24
+    Memory.write_i32(indices + ioff, base_vertex)
+    Memory.write_i32(indices + ioff + 4, base_vertex + 1)
+    Memory.write_i32(indices + ioff + 8, base_vertex + 2)
+    Memory.write_i32(indices + ioff + 12, base_vertex)
+    Memory.write_i32(indices + ioff + 16, base_vertex + 2)
+    Memory.write_i32(indices + ioff + 20, base_vertex + 3)
+    return face_index + 1
+
 attach VoxelChunk:
 
     static fun create(size_x: i32, size_y: i32, size_z: i32) -> VoxelChunk:
@@ -1406,11 +1432,13 @@ attach VoxelChunk:
         self.last_face_count = face_index
         return face_index
 
-    # Build both crossed cards for selected grass and sunflower columns into
-    # one chunk mesh. Both species share one atlas/material, so there are no
-    # vegetation Nodes and no per-plant draw calls.
+    # Build grass cards and articulated sunflower cards into one chunk mesh.
+    # Both species still share one atlas/material, so the richer flower shape
+    # adds no vegetation Nodes, per-plant draw calls, or per-frame CPU work.
     fun build_vegetation_mesh_into(self, workspace: VoxelMeshWorkspace, seed: i32, grass_block_id: i32) -> i32:
-        max_faces: i32 = self.size_x * self.size_z * 2
+        # Grass needs two crossed cards. A sunflower uses two leafy stem cards,
+        # two narrow upper-stalk cards, and front/rear head cards.
+        max_faces: i32 = self.size_x * self.size_z * 6
         if max_faces <= 0:
             self.last_vegetation_face_count = 0
             return 0
@@ -1458,28 +1486,64 @@ attach VoxelChunk:
                                     cs: f32 = @cos(angle)
                                     sn: f32 = @sin(angle)
                                     width_variant: f32 = (((hash >> 20) & 15) as f32) / 15.0
-                                    half_width: f32 = 0.5
-                                    height: f32 = 1.0
                                     shade: f32 = 0.90 + width_variant * 0.10
-                                    uv_u0: f32 = 0.125
-                                    uv_v0: f32 = 0.5
-                                    uv_u1: f32 = 0.375
-                                    uv_v1: f32 = 1.0
                                     if is_sunflower != 0:
-                                        # The 64x64 atlas cell spans 2x2 world
-                                        # units, preserving exactly 32 px per
-                                        # meter. Transparent side gutters make
-                                        # the visible flower about 1.1 m wide.
-                                        half_width = 1.0
-                                        height = 2.0
-                                        shade = 1.0
-                                        uv_u0 = 0.5
-                                        uv_v0 = 0.0
-                                        uv_u1 = 1.0
-                                        uv_v1 = 1.0
+                                        # Keep the leafy stalk as two crossed
+                                        # cards, but separate it from the head.
+                                        # The 64x32 cell maps to 2x1 meters,
+                                        # preserving the 32-pixels-per-meter
+                                        # world scale and the original sprite.
+                                        # Crop transparent atlas gutters out of
+                                        # the geometry as well as the UVs. The
+                                        # visible size stays identical while
+                                        # alpha-test overdraw is nearly halved.
+                                        face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, cs * 0.515625, sn * 0.515625, 0.9375, 1.0, 1.0, 1.0, 0.80859375, 0.515625, 0.9375, 0.984375)
+                                        face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, (0.0 - sn) * 0.515625, cs * 0.515625, 0.9375, 1.0, 1.0, 1.0, 0.80859375, 0.515625, 0.9375, 0.984375)
 
-                                    face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, cs * half_width, sn * half_width, height, shade, 1.0, shade, uv_u0, uv_v0, uv_u1, uv_v1)
-                                    face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, (0.0 - sn) * half_width, cs * half_width, height, shade, 1.0, shade, uv_u0, uv_v0, uv_u1, uv_v1)
+                                        # Give every head a stable natural
+                                        # direction and a 10-22 degree upward
+                                        # tilt. Nothing tracks the camera.
+                                        tilt_variant: f32 = (((hash >> 24) & 127) as f32) / 127.0
+                                        tilt: f32 = 0.174532925 + tilt_variant * 0.209439510
+                                        tilt_cs: f32 = @cos(tilt)
+                                        tilt_sn: f32 = @sin(tilt)
+                                        front_x: f32 = sn
+                                        front_z: f32 = 0.0 - cs
+                                        head_normal_x: f32 = front_x * tilt_cs
+                                        head_normal_y: f32 = tilt_sn
+                                        head_normal_z: f32 = front_z * tilt_cs
+                                        head_up_x: f32 = (0.0 - front_x) * tilt_sn * 0.546875
+                                        head_up_y: f32 = tilt_cs * 0.546875
+                                        head_up_z: f32 = (0.0 - front_z) * tilt_sn * 0.546875
+                                        head_center_x: f32 = center_x + front_x * 0.03
+                                        head_center_y: f32 = bottom_y + 1.45
+                                        head_center_z: f32 = center_z + front_z * 0.03
+                                        thickness: f32 = 0.045
+
+                                        # Continue a narrow stalk behind the
+                                        # head instead of ending the leafy
+                                        # sprite at its lower edge. Moving it
+                                        # slightly toward the rear keeps it
+                                        # hidden by the golden face while it
+                                        # visibly joins the green receptacle.
+                                        stalk_center_x: f32 = center_x - head_normal_x * 0.07
+                                        stalk_center_z: f32 = center_z - head_normal_z * 0.07
+                                        stalk_bottom_y: f32 = bottom_y + 0.72
+                                        stalk_height: f32 = head_center_y + 0.06 - stalk_bottom_y
+                                        face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, stalk_center_x, stalk_bottom_y, stalk_center_z, cs * 0.055, sn * 0.055, stalk_height, 1.0, 1.0, 1.0, 0.376953125, 0.6328125, 0.376953125, 0.6328125)
+                                        face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, stalk_center_x, stalk_bottom_y, stalk_center_z, (0.0 - sn) * 0.055, cs * 0.055, stalk_height, 1.0, 1.0, 1.0, 0.376953125, 0.6328125, 0.376953125, 0.6328125)
+
+                                        # Golden seed face.
+                                        face_index = voxel_write_oriented_vegetation_quad(workspace.vertices, workspace.indices, face_index, head_center_x + head_normal_x * thickness, head_center_y + head_normal_y * thickness, head_center_z + head_normal_z * thickness, cs * 0.5625, 0.0, sn * 0.5625, head_up_x, head_up_y, head_up_z, head_normal_x, head_normal_y, head_normal_z, 1.0, 1.0, 1.0, 0.3046875, 0.015625, 0.4453125, 0.5625)
+                                        # Green receptacle and sepals on the
+                                        # rear, slightly separated to avoid
+                                        # z-fighting at oblique angles.
+                                        face_index = voxel_write_oriented_vegetation_quad(workspace.vertices, workspace.indices, face_index, head_center_x - head_normal_x * thickness, head_center_y - head_normal_y * thickness, head_center_z - head_normal_z * thickness, cs * 0.5625, 0.0, sn * 0.5625, head_up_x, head_up_y, head_up_z, 0.0 - head_normal_x, 0.0 - head_normal_y, 0.0 - head_normal_z, 1.0, 1.0, 1.0, 0.5546875, 0.015625, 0.6953125, 0.5625)
+                                    else:
+                                        # 32x32 grass cell on a 1x1 meter
+                                        # crossed card.
+                                        face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, cs * 0.5, sn * 0.5, 1.0, shade, 1.0, shade, 0.0625, 0.5, 0.1875, 1.0)
+                                        face_index = voxel_write_vegetation_quad(workspace.vertices, workspace.indices, face_index, center_x, bottom_y, center_z, (0.0 - sn) * 0.5, cs * 0.5, 1.0, shade, 1.0, shade, 0.0625, 0.5, 0.1875, 1.0)
                 x = x + 1
             z = z + 1
 

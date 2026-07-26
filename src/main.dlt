@@ -12,8 +12,8 @@ Engine.window.set_mode(WindowMode.fullscreen())
 #Engine.window.set_mode(WindowMode.borderless_fullscreen())
 # Try one present mode at a time:
 #Engine.properties.set_present_mode(PresentMode.auto())
-Engine.properties.set_present_mode(PresentMode.immediate())
-#Engine.properties.set_present_mode(PresentMode.mailbox())
+Engine.properties.set_present_mode(PresentMode.immediate()) #fullfps
+#Engine.properties.set_present_mode(PresentMode.mailbox())#smoother but high latency
 #Engine.properties.set_present_mode(PresentMode.fifo())
 #Engine.properties.set_present_mode(PresentMode.fifo_relaxed())
 #Engine.properties.set_target_fps(60)
@@ -21,7 +21,7 @@ Engine.properties.set_frustum_culling(1)
 Engine.debug.render_stats(0)
 Engine.debug.frame_pacing(1)
 #
-Engine.properties.set_render_scale(1.0)
+Engine.properties.set_render_scale(2.0)
 #print(Engine.properties.render_scale())
 #Engine.properties.set_vsync(0)
 
@@ -62,7 +62,7 @@ sky.add_object(day_object)
 sky.add_object(night_object)
 sky.add_object(stars)
 env.set_sky(sky)
-env.set_fog(Fog.view_distance(sky.fog_color(), 3600.0))
+env.set_fog(Fog.view_distance(sky.fog_color(), 1000.0)) #3600.0
 scene.set_environment(env)
 
 player_actor: Node3D = Node3D.create("Player")
