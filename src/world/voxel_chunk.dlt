@@ -1488,6 +1488,7 @@ attach VoxelChunk:
                                     width_variant: f32 = (((hash >> 20) & 15) as f32) / 15.0
                                     shade: f32 = 0.90 + width_variant * 0.10
                                     if is_sunflower != 0:
+                                        sunflower_first_face: i32 = face_index
                                         # Keep the leafy stalk as two crossed
                                         # cards, but separate it from the head.
                                         # The 64x32 cell maps to 2x1 meters,
@@ -1539,6 +1540,17 @@ attach VoxelChunk:
                                         # rear, slightly separated to avoid
                                         # z-fighting at oblique angles.
                                         face_index = voxel_write_oriented_vegetation_quad(workspace.vertices, workspace.indices, face_index, head_center_x - head_normal_x * thickness, head_center_y - head_normal_y * thickness, head_center_z - head_normal_z * thickness, cs * 0.5625, 0.0, sn * 0.5625, head_up_x, head_up_y, head_up_z, 0.0 - head_normal_x, 0.0 - head_normal_y, 0.0 - head_normal_z, 1.0, 1.0, 1.0, 0.5546875, 0.015625, 0.6953125, 0.5625)
+                                        # Frog owns the compact GPU foliage
+                                        # metadata and spring interaction.
+                                        gpu_tag_interactive_foliage(
+                                            workspace.vertices,
+                                            sunflower_first_face * 4,
+                                            (face_index - sunflower_first_face) * 4,
+                                            center_x,
+                                            bottom_y,
+                                            center_z,
+                                            1.95
+                                        )
                                     else:
                                         # 32x32 grass cell on a 1x1 meter
                                         # crossed card.
