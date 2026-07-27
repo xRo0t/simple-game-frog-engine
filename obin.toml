@@ -27,9 +27,11 @@ destination = "assets"
 [tool.frog]
 enabled = true
 cook-models = true
+# Every texture in this project is deliberately authored pixel art. Keep its
+# base mip byte-exact; BC7 remains the default for non-pixel-art projects.
+texture-lossless-patterns = [".png"]
 lods = [0.45, 0.22]
 
 [package]
 directory = "dist"
 include-assets = true
-
